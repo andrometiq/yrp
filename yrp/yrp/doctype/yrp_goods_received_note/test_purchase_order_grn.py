@@ -70,6 +70,24 @@ def _item_uom(item_variant):
 	return frappe.db.get_value("Item", parent_item, "stock_uom") or "Piece"
 
 
+def _non_stock_item():
+	item_code = f"_Test Non Stock PO Item {frappe.generate_hash(length=6)}"
+	stock_item = get_parent_item(_test_item_variant())
+	frappe.get_doc(
+		{
+			"doctype": "Item",
+			"item_code": item_code,
+			"item_name": item_code,
+			"item_group": frappe.db.get_value("Item", stock_item, "item_group"),
+			"gst_hsn_code": frappe.db.get_value("Item", stock_item, "gst_hsn_code"),
+			"stock_uom": _item_uom(stock_item),
+			"is_stock_item": 0,
+			"is_purchase_item": 1,
+		}
+	).insert(ignore_permissions=True)
+	return item_code
+
+
 def _supplier(supplier_name):
 	existing = frappe.db.get_value("Supplier", {"supplier_name": supplier_name}, "name")
 	if existing:
@@ -559,6 +577,28 @@ class TestPurchaseOrderGRN(FrappeTestCase):
 			get_stock_balance(item_variant, warehouse, received_type=received_type),
 			baseline,
 		)
+
+	def test_non_stock_po_grn_posts_no_stock_ledger(self):
+		warehouse = _warehouse("_Test_PO_GRN_WH")
+		stock_po = _purchase_order(qty=2, warehouse=warehouse)
+		non_stock_po = _purchase_order(qty=2, warehouse=warehouse, item_variant=_non_stock_item())
+
+		stock_grn = _purchase_order_grn(stock_po, qty=2)
+		stock_grn.submit()
+		non_stock_grn = _purchase_order_grn(non_stock_po, qty=2)
+		non_stock_grn.submit()
+
+		non_stock_po.reload()
+		self.assertAlmostEqual(non_stock_po.items[0].received_qty, 2)
+		self.assertEqual(non_stock_po.yrp_fulfillment_status, "Received")
+		self.assertTrue(frappe.db.exists("YRP Stock Ledger Entry", {"voucher_no": stock_grn.name}))
+		self.assertFalse(frappe.db.exists("YRP Stock Ledger Entry", {"voucher_no": non_stock_grn.name}))
+
+		non_stock_grn.cancel()
+
+		non_stock_po.reload()
+		self.assertAlmostEqual(non_stock_po.items[0].received_qty, 0)
+		self.assertFalse(frappe.db.exists("YRP Stock Ledger Entry", {"voucher_no": non_stock_grn.name}))
 
 	def test_po_grn_copies_purchase_order_item_tax(self):
 		from yrp.yrp.doctype.yrp_goods_received_note.yrp_goods_received_note import (
