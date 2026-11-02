@@ -287,6 +287,44 @@ class TestPurchaseInvoice(FrappeTestCase):
 		)
 		self.assertEqual(len({flt(row["rate"]) for row in commercial_rows}), 2)
 
+	def test_fetch_skips_zero_quantity_grn_rows(self):
+		supplier = _supplier(f"_Test PI Zero Supplier {frappe.generate_hash(length=6)}")
+		billed_po, zero_po = (
+			_purchase_order(
+				qty=2,
+				warehouse=_warehouse(f"_Test_PI_Zero_WH_{frappe.generate_hash(length=6)}"),
+				supplier=supplier,
+				rate=rate,
+			)
+			for rate in (25, 35)
+		)
+		billed_grn = _purchase_order_grn(billed_po, qty=2)
+		billed_grn.submit()
+		zero_grn = _purchase_order_grn(zero_po, qty=2)
+		zero_grn.submit()
+		# Migrated F15 GRNs can hold zero-quantity rows.
+		frappe.db.set_value("YRP Goods Received Note Item", zero_grn.items[0].name, "quantity", 0)
+
+		for use_host_projection in (False, True):
+			with self.subTest(use_host_projection=use_host_projection):
+				data = _fetch_grn_details(
+					[billed_grn.name, zero_grn.name],
+					"Purchase Order",
+					supplier,
+					use_host_projection=use_host_projection,
+				)
+				self.assertEqual([flt(row["qty"]) for row in data["items"]], [2])
+				self.assertEqual([flt(row["qty"]) for row in _commercial_rows(data)], [2])
+				with self.assertRaisesRegex(
+					frappe.ValidationError, "no item with quantity greater than zero"
+				):
+					_fetch_grn_details(
+						[zero_grn.name],
+						"Purchase Order",
+						supplier,
+						use_host_projection=use_host_projection,
+					)
+
 	def test_purchase_order_invoice_tracks_grn_and_blocks_grn_cancel(self):
 		po = _purchase_order(qty=4, warehouse=_warehouse(f"_Test_PI_PO_WH_{frappe.generate_hash(length=6)}"))
 		grn = _purchase_order_grn(po, qty=4)

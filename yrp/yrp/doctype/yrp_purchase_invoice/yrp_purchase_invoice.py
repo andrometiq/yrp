@@ -356,6 +356,8 @@ def fetch_grn_details(grns, against, supplier, purchase_invoice=None):
 		)
 		for grn_item in grn.get("items") or []:
 			qty = flt(grn_item.quantity)
+			if not qty:
+				continue
 			stock_rate = flt(grn_item.rate)
 			tax = grn_item.get("tax") if grn_item.meta.get_field("tax") else None
 			set_combination = _normal_json(grn_item.get("set_combination"))
@@ -430,6 +432,8 @@ def fetch_grn_details(grns, against, supplier, purchase_invoice=None):
 				wo_items[wo_key]["quantity"] += qty
 
 	item_rows = list(items.values())
+	if not item_rows:
+		frappe.throw(_("Selected GRNs have no item with quantity greater than zero."))
 	for row in item_rows:
 		row["rate"] = flt(row["amount"]) / flt(row["qty"]) if flt(row["qty"]) else 0
 		row["source_rate"] = row["rate"]
