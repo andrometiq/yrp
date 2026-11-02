@@ -20,6 +20,9 @@ class YRPDebit(Document):
 		else:
 			self.status = "Debit Requested"
 
+	def on_cancel(self):
+		self.db_set("status", "Cancelled")
+
 
 @frappe.whitelist()
 def get_work_order_defaults(work_order):

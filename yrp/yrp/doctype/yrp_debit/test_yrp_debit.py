@@ -178,3 +178,21 @@ class TestYRPDebit(FrappeTestCase):
 		self.set_unprivileged_user()
 		with self.assertRaises(frappe.PermissionError):
 			self.create_debit(wo.name, on_close=1)
+
+	def test_cancelling_approved_debit_marks_it_cancelled(self):
+		wo = _work_order_for_invoice(qty=1)
+		debit = frappe.get_doc("YRP Debit", self.create_debit(wo.name).name)
+		self.assertEqual(debit.status, "Approved")
+		debit.cancel()
+		self.assertEqual(
+			frappe.db.get_value("YRP Debit", debit.name, ["docstatus", "status"]), (2, "Cancelled")
+		)
+
+	def test_approve_rejects_cancelled_debit(self):
+		wo = _work_order_for_invoice(qty=1)
+		self.roles["debit_approval_role"] = None
+		debit = frappe.get_doc("YRP Debit", self.create_debit(wo.name).name)
+		debit.cancel()
+		self.roles["debit_approval_role"] = "System Manager"
+		with self.assertRaisesRegex(frappe.ValidationError, "submitted before approval"):
+			yrp_debit.approve_debit(debit.name)
