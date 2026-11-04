@@ -72,6 +72,13 @@ class TestWhatsAppNotification(IntegrationTestCase):
 		supplier = _supplier(f"_T WA Supplier {frappe.generate_hash(length=6)}")
 		return frappe.get_doc("Supplier", supplier), _contact_for(supplier, mobile=mobile)
 
+	def _user(self, email):
+		if not frappe.db.exists("User", email):
+			frappe.get_doc(
+				{"doctype": "User", "email": email, "first_name": "WA Test", "send_welcome_email": 0}
+			).insert(ignore_permissions=True)
+		return email
+
 	def _preview(self, action, contact):
 		return {
 			"action": action.name,
@@ -148,6 +155,33 @@ class TestWhatsAppNotification(IntegrationTestCase):
 		self.assertEqual(users, ["Administrator", "Administrator"])
 		self.assertEqual(frappe.session.user, "Administrator")
 
+	def test_request_key_is_per_user_and_per_dialog(self):
+		action = self._action()
+		po, contact = self._supplier()
+		ok = {"results": [{"contact": contact.name, "status": "Submitted"}]}
+		with (
+			patch(PREVIEW, return_value=self._preview(action, contact)),
+			patch(SEND, return_value=ok) as mock,
+		):
+			for request_key in ("dialog-1", "dialog-1", "dialog-2"):
+				whatsapp_notification.send_whatsapp_notification(
+					"Supplier", po.name, action.name, request_key=request_key
+				)
+			frappe.set_user(self._user("yrp-wa-other@example.com"))
+			try:
+				with (
+					patch("frappe.has_permission", return_value=True),
+					patch.object(whatsapp_notification, "get_action", return_value=action),
+				):
+					whatsapp_notification.send_whatsapp_notification(
+						"Supplier", po.name, action.name, request_key="dialog-2"
+					)
+			finally:
+				frappe.set_user("Administrator")
+		keys = [call.args[4] for call in mock.call_args_list]
+		self.assertEqual(keys[0], keys[1])
+		self.assertEqual(len(set(keys)), 3)
+
 	def test_send_rejects_a_number_outside_the_supplier_contacts(self):
 		action = self._action()
 		po, contact = self._supplier()
@@ -170,12 +204,7 @@ class TestWhatsAppNotification(IntegrationTestCase):
 	def test_send_needs_write_permission(self):
 		action = self._action()
 		po, _contact = self._supplier()
-		email = "yrp-wa-no-access@example.com"
-		if not frappe.db.exists("User", email):
-			frappe.get_doc(
-				{"doctype": "User", "email": email, "first_name": "WA No Access", "send_welcome_email": 0}
-			).insert(ignore_permissions=True)
-		frappe.set_user(email)
+		frappe.set_user(self._user("yrp-wa-no-access@example.com"))
 		try:
 			with patch(SEND) as mock, self.assertRaises(frappe.PermissionError):
 				whatsapp_notification.send_whatsapp_notification("Supplier", po.name, action.name)

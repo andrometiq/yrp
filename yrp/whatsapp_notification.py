@@ -138,9 +138,9 @@ def get_whatsapp_context(doctype, docname, supplier_key="supplier"):
 	}
 
 
-def get_request_key(*parts) -> str:
-	"""Same key within 10 minutes, so a double click sends one message."""
-	content = ":".join(str(part) for part in (*parts, int(time.time() // KEY_SECONDS)))
+def get_request_key(dialog_key, *parts) -> str:
+	"""One message per dialog. Without a dialog key, one message per 10 minutes, so a double click sends once."""
+	content = ":".join(str(part) for part in (*parts, dialog_key or int(time.time() // KEY_SECONDS)))
 	return hashlib.sha256(content.encode()).hexdigest()[:64]
 
 
@@ -154,23 +154,26 @@ def send_whatsapp_notification(
 	mobile_no=None,
 	header_file=None,
 	supplier_key="supplier",
+	request_key=None,
 ):
 	"""Send the Document Action `template_name` to the supplier contact of `mobile_no`.
 
 	language_code, params and header_file are accepted for older clients; the action fills
-	the message and attaches the PDF."""
+	the message and attaches the PDF. `request_key` comes from the dialog, so a retry from a
+	new dialog sends again."""
 	frappe.has_permission(doctype, ptype="write", doc=docname, throw=True)
 	action = get_action(doctype, template_name)
 
 	from relay_core.document_actions import preview, send
 	from relay_core.identity import phone_number
 
+	user = frappe.session.user
 	with relay_user():
 		numbers = get_recipient_numbers(preview(doctype, docname, action.name)["recipients"])
 		number = phone_number(mobile_no or "", "IN") or next(iter(numbers), None)
 		if number not in numbers:
 			frappe.throw(_("Choose a WhatsApp number of the supplier's contacts"))
-		key = get_request_key(frappe.session.user, doctype, docname, action.name, number)
+		key = get_request_key(request_key, user, doctype, docname, action.name, number)
 		results = send(doctype, docname, action.name, [numbers[number]], key)["results"]
 
 	errors = [row.get("error") or row.get("status") for row in results if row.get("status") not in SENT]
