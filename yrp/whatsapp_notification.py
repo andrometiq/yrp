@@ -1,243 +1,147 @@
 # Copyright (c) 2026, Essdee and contributors
 # For license information, please see license.txt
 
-"""Manual WhatsApp supplier notifications from supplier-linked documents.
+"""Send WhatsApp to a document's supplier through Relay Core Document Actions.
 
-Mirrors the SMS Flow trio in yrp/notification.py (get_flow_sms_context /
-send_flow_sms_notification / resend_sms_notification_log) for the WhatsApp
-hub-and-spoke transport, reusing that module's contact-resolution helpers
-(_get_doc_and_supplier / _get_recipient_details / _extract_numbers /
-_doc_field_options). Meta only accepts an APPROVED template for a proactive,
-business-initiated message, so the picker lists only APPROVED templates that
-are ALSO configured as applicable to the doctype (YRP WhatsApp Template >
-Applicable DocTypes) -- the template-centric model this module was refactored
-onto (mirrors the e-Way Bill / SMS settings-allowlist pattern): YRP WhatsApp
-Hub Settings.enabled_doctypes gates WHICH doctypes may send at all, while each
-template's own applicable_doctypes says WHICH templates that doctype may use.
-There is no more per-(doctype, template) config row -- header/media choice
-and variable filling happen in the sending dialog, not in stored config.
-
-Send never raises on a delivery failure: yrp/whatsapp.deliver_whatsapp_template
-returns a captured result dict, the attempt is written to WhatsApp Notification
-Log, and a failure surfaces as a red msgprint so the Failed row is the durable
-signal for resend. Spec:
-docs/superpowers/specs/2026-07-05-yrp-whatsapp-supplier-notification-design.md
+A Relay Document Action names the approved template, the document fields that fill it and
+the print format sent as its PDF. yrp checks the user's permission on the document, then
+Relay sends as Administrator, so a user does not need a Relay role to send.
 """
+
+import base64
+import hashlib
+import time
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
 
-from yrp.notification import (
-	_doc_field_options,
-	_extract_numbers,
-	_get_doc_and_supplier,
-	_get_recipient_details,
-)
-from yrp.yrp.doctype.yrp_whatsapp_hub_settings.yrp_whatsapp_hub_settings import (
-	parse_whatsapp_variables,
-)
-
-_MEDIA_HEADER_TYPES = ("IMAGE", "DOCUMENT", "VIDEO")
-
-
-def _resolve_wa_variable(mapping_value, doc):
-	"""Resolve one variable's mapping value against the source document.
-
-	- A leading "=" makes the rest a literal ("=Ready" -> "Ready").
-	- A dotted path walks the Link chain hop by hop with frappe.get_value
-	  ("supplier.supplier_name" -> Supplier(doc.supplier).supplier_name); any
-	  empty / non-link hop yields "".
-	- Anything else is a plain fieldname on the doc itself (doc.get(field)).
-
-	Unresolved values come back as "" so the user fills them in the dialog.
-	The mapping value now comes from the template's OWN sample_values child
-	row for that variable number/type (see _sample_mapping_value) rather than
-	a per-doctype config row -- the template-centric model puts this on the
-	template, not on a separate config doctype.
-	"""
-	if mapping_value is None:
-		return ""
-	mapping_value = str(mapping_value)
-	if mapping_value.startswith("="):
-		return mapping_value[1:]
-	if "." in mapping_value:
-		parts = mapping_value.split(".")
-		value = doc.get(parts[0])
-		df = frappe.get_meta(doc.doctype).get_field(parts[0])
-		for segment in parts[1:]:
-			if not value or not df or df.fieldtype not in ("Link", "Dynamic Link"):
-				return ""
-			linked_doctype = df.options
-			value = frappe.get_value(linked_doctype, value, segment)
-			df = frappe.get_meta(linked_doctype).get_field(segment)
-		return value if value not in (None, "") else ""
-	value = doc.get(mapping_value)
-	return value if value not in (None, "") else ""
+RELAY_APP = "relay_core"
+SEND_USER = "Administrator"
+SENT = ("Submitted", "Queued")
+KEY_SECONDS = 600
+TEMPLATE_NAME = "yrp_supplier_document"
+TEMPLATE_LANGUAGE = "en"
+TEMPLATE_BODY = "Hello {{1}},\n\nPlease find the attached document {{2}} dated {{3}}.\n\nThank you."
+# Document -> date field of the template's {{3}}.
+SUPPLIER_DOCUMENTS = {
+	"Purchase Order": "transaction_date",
+	"YRP Goods Received Note": "posting_date",
+	"YRP Delivery Challan": "posting_date",
+}
 
 
-def _sample_mapping_value(mirror, number, vtype):
-	"""The template's own Sample Values row for (number, vtype), or None.
-
-	Sample Values (variable_number/variable_type/sample_value) already exist
-	on YRP WhatsApp Template for Meta's template-submission examples, and
-	_upsert_local_template never touches them on re-sync -- so they are safe,
-	user-owned, per-template storage. This refactor reuses that same field as
-	the variable's auto-fill source, resolved through _resolve_wa_variable's
-	fieldname / dotted-path / literal ("=...") syntax -- the direct
-	replacement for the old per-(doctype, template) variable_mapping JSON.
-	"""
-	for row in mirror.sample_values or []:
-		if row.variable_number == number and row.variable_type == vtype:
-			return row.sample_value
-	return None
+def is_relay_installed() -> bool:
+	return RELAY_APP in frappe.get_installed_apps()
 
 
-def _template_context(mirror, doc):
-	"""Build one template's dialog payload: identity fields the dialog needs
-	to render the message plus every positional {{n}} variable (body first,
-	then a TEXT header's), each pre-resolved from `doc` via the template's own
-	Sample Values, or blank for the user to fill."""
-	variables = []
-	for n in parse_whatsapp_variables(mirror.body_text):
-		variables.append(
-			{
-				"name": "{{%d}}" % n,
-				"type": "body",
-				"value": _resolve_wa_variable(_sample_mapping_value(mirror, n, "body"), doc),
-			}
-		)
-	if mirror.header_type == "TEXT" and mirror.header_content:
-		for n in parse_whatsapp_variables(mirror.header_content):
-			variables.append(
-				{
-					"name": "{{%d}}" % n,
-					"type": "header",
-					"value": _resolve_wa_variable(_sample_mapping_value(mirror, n, "header"), doc),
-				}
-			)
-	return {
-		"name": mirror.name,
-		"template_name": mirror.template_name,
-		"language_code": mirror.language_code,
-		"header_type": mirror.header_type,
-		"body_text": mirror.body_text,
-		"footer_text": mirror.footer_text,
-		"needs_media": mirror.header_type in _MEDIA_HEADER_TYPES,
-		"variables": variables,
-	}
+@contextmanager
+def relay_user():
+	previous = frappe.session.user
+	frappe.set_user(SEND_USER)
+	try:
+		yield
+	finally:
+		frappe.set_user(previous)
+
+
+def get_document_actions(doctype: str | None = None) -> list:
+	"""Enabled supplier Document Actions on an enabled WhatsApp channel that the user's roles allow."""
+	if not is_relay_installed():
+		return []
+	from relay_core.settings import value
+
+	channels = frappe.get_all(
+		"Relay Channel",
+		filters={"channel": "WhatsApp", "enabled": 1, "account": value("relay_hub_account")},
+		pluck="name",
+	)
+	filters = {"enabled": 1, "business_doctype": "Supplier", "channel": ["in", channels or [""]]}
+	if doctype:
+		filters["document_type"] = doctype
+	actions = frappe.get_all(
+		"Relay Document Action",
+		filters=filters,
+		fields=["name", "document_type", "business_field"],
+		order_by="name asc",
+	)
+	roles = set(frappe.get_roles())
+	action_roles = {}
+	for row in frappe.get_all("Relay Document Action Role", fields=["parent", "role"]):
+		action_roles.setdefault(row.parent, set()).add(row.role)
+	return [
+		action for action in actions if not action_roles.get(action.name) or roles & action_roles[action.name]
+	]
+
+
+@frappe.whitelist()
+def get_enabled_whatsapp_doctypes():
+	"""{"doctypes": {doctype: supplier field}} of the documents that can send WhatsApp."""
+	doctypes = {}
+	for action in get_document_actions():
+		doctypes.setdefault(action.document_type, action.business_field)
+	return {"doctypes": doctypes}
+
+
+def get_action(doctype: str, action_name: str):
+	for action in get_document_actions(doctype):
+		if action.name == action_name:
+			return action
+	frappe.throw(_("WhatsApp message {0} is not available for {1}").format(action_name, _(doctype)))
+
+
+def get_recipient_numbers(recipients: list) -> dict:
+	"""{number: contact}: the number Relay sends to for each recipient contact."""
+	from relay_core.identity import phone_number
+
+	numbers = {}
+	for row in recipients:
+		if not row["numbers"]:
+			continue
+		mobile = phone_number(frappe.db.get_value("Contact", row["contact"], "mobile_no") or "", "IN")
+		numbers.setdefault(mobile if mobile in row["numbers"] else row["numbers"][0], row["contact"])
+	return numbers
 
 
 @frappe.whitelist()
 def get_whatsapp_context(doctype, docname, supplier_key="supplier"):
-	"""Everything the Send-WhatsApp dialog needs: the supplier's recipient
-	details, every contact number, and every APPROVED WhatsApp template that
-	lists this doctype in its Applicable DocTypes -- each with its positional
-	{{n}} body+header variables pre-resolved from the document (unresolved
-	ones blank for the user to fill). Meta renders the message from the
-	approved template + ordered variables, so no rendered body is returned.
-
-	Throws first if the doctype itself is not in YRP WhatsApp Hub Settings'
-	Enabled DocTypes allowlist -- before any supplier/contact resolution, the
-	same "fail fast on a disabled route" shape as the SMS/e-Way Bill
-	allowlists. Also throws (like the SMS context) on no supplier / no
-	contact / no number / no applicable-and-APPROVED template.
-	"""
+	"""The supplier's WhatsApp numbers and one filled message per Document Action of the doctype."""
 	frappe.has_permission(doctype, ptype="read", doc=docname, throw=True)
+	actions = get_document_actions(doctype)
+	if not actions:
+		frappe.throw(_("WhatsApp is not set up for {0} in Relay Document Actions").format(_(doctype)))
 
-	settings = frappe.get_cached_doc("YRP WhatsApp Hub Settings")
-	if not settings.is_doctype_enabled(doctype):
-		frappe.throw(_("WhatsApp is not enabled for {0} in YRP WhatsApp Hub Settings").format(_(doctype)))
+	from relay_core.document_actions import preview
 
-	doc, supplier = _get_doc_and_supplier(doctype, docname, supplier_key)
-	details = _get_recipient_details(supplier)
-	numbers = _extract_numbers(details["contact"], details["mobile"])
-
-	mirror_names = frappe.get_all("YRP WhatsApp Template", filters={"status": "APPROVED"}, pluck="name")
-	templates = []
-	for name in mirror_names:
-		mirror = frappe.get_doc("YRP WhatsApp Template", name)
-		if mirror.is_applicable_for(doctype):
-			templates.append(_template_context(mirror, doc))
-
-	if not templates:
-		frappe.throw(_("No APPROVED WhatsApp template configured for {0}").format(_(doctype)))
-
+	with relay_user():
+		previews = [preview(doctype, docname, action.name) for action in actions]
+	numbers = get_recipient_numbers(previews[0]["recipients"])
+	if not numbers:
+		frappe.throw(_("The supplier has no contact with a WhatsApp number"))
 	return {
-		"supplier": supplier.name,
-		"contact": details["contact"],
-		"mobile": details["mobile"],
-		"email": details["email"],
-		"numbers": numbers,
-		"templates": templates,
-		"doc_fields": _doc_field_options(doctype),
+		"supplier": frappe.db.get_value(doctype, docname, actions[0].business_field),
+		"contact": next(iter(numbers.values())),
+		"mobile": next(iter(numbers)),
+		"numbers": list(numbers),
+		"templates": [
+			{
+				"name": row["action"],
+				"template_name": row["action"],
+				"body_text": row["text"],
+				"file_name": row["file_name"],
+				"needs_media": False,
+				"variables": [],
+			}
+			for row in previews
+		],
+		"doc_fields": [],
 	}
 
 
-def _ordered_list(positional):
-	"""Values of a positional-string-keyed dict ("1".."10") in ascending int
-	order (string sort would put "10" before "2"). A list/tuple passes through;
-	None / empty -> []."""
-	if positional is None:
-		return []
-	if isinstance(positional, (list, tuple)):
-		return list(positional)
-	return [positional[k] for k in sorted(positional, key=lambda k: int(k))]
-
-
-def _split_params(params):
-	"""Split the dialog's filled variables into ordered (header_vars, body_vars)
-	lists. `params` is a FLAT dict keyed "<type>:<n>" — type in {"body","header"},
-	n a positional int as a string — e.g. {"body:1": "PO-001", "body:2": "Acme",
-	"header:1": "Invoice"} (or a JSON string of the same, or None). Each key is
-	split on ":", bucketed by its type prefix, and each bucket ordered by int(n)
-	independently (header and body carry separate Meta positional numbering)."""
-	if isinstance(params, str):
-		params = frappe.parse_json(params) if params.strip() else {}
-	params = params or {}
-	buckets = {"header": {}, "body": {}}
-	for key, value in params.items():
-		vtype, _sep, num = str(key).partition(":")
-		if num and vtype in buckets:
-			buckets[vtype][num] = value
-	return _ordered_list(buckets["header"]), _ordered_list(buckets["body"])
-
-
-def _build_media_header_source(header_type, header_file):
-	"""The dialog's uploaded file (`header_file`, a File file_url) becomes the
-	deliver-shape header_source dict for a media-header template: {header_format,
-	file_url}. None when the template's header isn't IMAGE/DOCUMENT/VIDEO, or no
-	file was supplied -- a text-header (or headerless) template never attaches
-	media, matching Meta's own component rules."""
-	if not header_file or header_type not in _MEDIA_HEADER_TYPES:
-		return None
-	return {"header_format": header_type, "file_url": header_file}
-
-
-def _as_text(value):
-	return "" if value is None else str(value)
-
-
-def _render_body_preview(mirror_name, body_vars):
-	"""Human-readable body with positional {{n}} substituted — the WhatsApp
-	value-add over the SMS Flow log (which stored only the param map). Survives
-	a since-deleted (or never-found) mirror by returning ""."""
-	if not mirror_name:
-		return ""
-	body = frappe.db.get_value("YRP WhatsApp Template", mirror_name, "body_text") or ""
-	for i, val in enumerate(body_vars or [], start=1):
-		body = body.replace("{{%d}}" % i, _as_text(val))
-	return body
-
-
-def _default_account_name():
-	"""Best-effort default hub account name, for the audit log only -- never
-	raises. Actual routing always passes account_name=None to
-	deliver_whatsapp_template, which resolves the default account itself; this
-	is purely so WhatsApp Notification Log records which account a send used."""
-	try:
-		return frappe.get_cached_doc("YRP WhatsApp Hub Settings").get_default_account_name()
-	except Exception:
-		return None
+def get_request_key(*parts) -> str:
+	"""Same key within 10 minutes, so a double click sends one message."""
+	content = ":".join(str(part) for part in (*parts, int(time.time() // KEY_SECONDS)))
+	return hashlib.sha256(content.encode()).hexdigest()[:64]
 
 
 @frappe.whitelist()
@@ -245,197 +149,120 @@ def send_whatsapp_notification(
 	doctype,
 	docname,
 	template_name,
-	language_code,
+	language_code=None,
 	params=None,
 	mobile_no=None,
 	header_file=None,
 	supplier_key="supplier",
 ):
-	"""Send one APPROVED WhatsApp template to the doc's supplier and log the
-	attempt. The lookup is keyed on (template_name, language_code) — never the
-	"en" default, because a wrong language is a different / nonexistent Meta
-	template. `params` (a FLAT {"body:1": ..., "header:1": ...} dict) is split
-	into ordered header/body variable lists; `header_file` (a File file_url
-	from an upload in the dialog) becomes the media header_source when the
-	template's header_type is IMAGE/DOCUMENT/VIDEO. Every attempt — success or
-	failure — is written to WhatsApp Notification Log; a failure surfaces as a
-	red msgprint, never a throw, so the Failed row is the durable signal for
-	resend. Returns the result dict so a /web modal can gate on result.ok (a
-	red msgprint on an HTTP 200 is dropped by the SPA's fetch wrapper) —
-	mirrors send_flow_sms_notification's contract.
-	"""
+	"""Send the Document Action `template_name` to the supplier contact of `mobile_no`.
+
+	language_code, params and header_file are accepted for older clients; the action fills
+	the message and attaches the PDF."""
 	frappe.has_permission(doctype, ptype="write", doc=docname, throw=True)
-	_doc, supplier = _get_doc_and_supplier(doctype, docname, supplier_key)
-	details = _get_recipient_details(supplier)
-	number = (mobile_no or details["mobile"]).strip()
+	action = get_action(doctype, template_name)
 
-	header_vars, body_vars = _split_params(params)
+	from relay_core.document_actions import preview, send
+	from relay_core.identity import phone_number
 
-	mirror_name = frappe.db.get_value(
-		"YRP WhatsApp Template",
-		{"template_name": template_name, "language_code": language_code},
-		"name",
-	)
-	if not mirror_name:
-		frappe.throw(_("WhatsApp template {0} ({1}) not found").format(template_name, language_code))
-	mirror = frappe.get_doc("YRP WhatsApp Template", mirror_name)
+	with relay_user():
+		numbers = get_recipient_numbers(preview(doctype, docname, action.name)["recipients"])
+		number = phone_number(mobile_no or "", "IN") or next(iter(numbers), None)
+		if number not in numbers:
+			frappe.throw(_("Choose a WhatsApp number of the supplier's contacts"))
+		key = get_request_key(frappe.session.user, doctype, docname, action.name, number)
+		results = send(doctype, docname, action.name, [numbers[number]], key)["results"]
 
-	# Same governance gate as get_whatsapp_context: write permission on the doc
-	# is NOT enough on its own -- without this, any write-permitted user could
-	# fire ANY approved template at ANY doctype, bypassing both the Hub
-	# Settings allowlist and the template's own applicable_doctypes.
-	settings = frappe.get_cached_doc("YRP WhatsApp Hub Settings")
-	if not settings.is_doctype_enabled(doctype):
-		frappe.throw(_("WhatsApp is not enabled for {0} in YRP WhatsApp Hub Settings").format(_(doctype)))
-	if not mirror.is_applicable_for(doctype):
-		frappe.throw(_("Template {0} is not applicable for {1}").format(template_name, _(doctype)))
-
-	# Normalise the recipient to an E.164-style wa_id: strip formatting, drop a
-	# leading domestic 0, and prefix the settings country code to a bare 10-digit
-	# number. Meta matches the registered/allow-listed number exactly, so a bare
-	# "9944405056" (without the 91) is rejected with (#131030) "not in allowed list".
-	cc = (getattr(settings, "country_code", None) or "91").strip()
-	_num = number
-	for _x in (" ", "-", "(", ")", "+"):
-		_num = _num.replace(_x, "")
-	if len(_num) == 11 and _num.startswith("0"):
-		_num = _num[1:]
-	if cc and len(_num) == 10:
-		_num = cc + _num
-	number = _num
-
-	# header_file is a bare client-supplied file_url with no inherent access
-	# check -- without this, a user could pass ANY private File's URL and have
-	# its bytes read and sent out over WhatsApp regardless of read permission.
-	if header_file:
-		file_doc = frappe.get_doc("File", {"file_url": header_file})
-		file_doc.check_permission("read")
-
-	header_dict = _build_media_header_source(mirror.header_type, header_file)
-
-	account_name = _default_account_name()
-	from yrp.whatsapp import deliver_whatsapp_template
-
-	result = deliver_whatsapp_template(
-		account_name=account_name,
-		to_number=number,
-		template_name=template_name,
-		language_code=language_code,
-		header_vars=header_vars or None,
-		body_vars=body_vars or None,
-		header_source=header_dict,
-	)
-
-	from yrp.yrp.doctype.yrp_whatsapp_notification_log.yrp_whatsapp_notification_log import (
-		create_whatsapp_log,
-	)
-
-	create_whatsapp_log(
-		reference_doctype=doctype,
-		reference_name=docname,
-		supplier=supplier.name,
-		contact=details["contact"],
-		mobile_no=number,
-		account=account_name,
-		message_type="Media" if header_dict else "Template",
-		template=mirror_name,
-		template_name=template_name,
-		language_code=language_code,
-		message=_render_body_preview(mirror_name, body_vars),
-		message_variables={"header_vars": header_vars, "body_vars": body_vars},
-		header_source=header_dict,
-		result=result,
-	)
-
+	errors = [row.get("error") or row.get("status") for row in results if row.get("status") not in SENT]
+	result = {"ok": bool(results) and not errors, "error": "; ".join(errors) or None, "results": results}
 	if result["ok"]:
 		frappe.msgprint(_("WhatsApp message sent to {0}").format(number))
 	else:
-		frappe.msgprint(
-			_("WhatsApp to {0} failed: {1}").format(number, result.get("error") or result.get("http_status")),
-			indicator="red",
-		)
-
+		frappe.msgprint(_("WhatsApp to {0} failed: {1}").format(number, result["error"]), indicator="red")
 	return result
 
 
-@frappe.whitelist()
-def resend_whatsapp_notification_log(log_name):
-	"""Re-send a logged WhatsApp attempt to the same number, rebuilding the send
-	from the row's stored message_variables / header_source / (template_name,
-	language_code) and patching that same row in place."""
-	log = frappe.get_doc("YRP WhatsApp Notification Log", log_name)
-	# Deleted-reference guard FIRST: block before any send. Without it an
-	# Administrator resend would fire the WhatsApp and only then fail on a
-	# dangling reference (mirrors the SMS resend guard).
-	if not frappe.db.exists(log.reference_doctype, log.reference_name):
-		frappe.throw(
-			_("Cannot resend: {0} {1} no longer exists").format(log.reference_doctype, log.reference_name)
-		)
-	frappe.has_permission(log.reference_doctype, ptype="write", doc=log.reference_name, throw=True)
+@frappe.whitelist(methods=["POST"])
+def create_supplier_document_template(channel=None):
+	"""Submit the supplier document template, with a PDF header, to Meta through Relay."""
+	frappe.only_for("System Manager")
+	from frappe.utils.pdf import get_pdf
+	from relay_core.whatsapp import execute
 
-	# Same allowlist gate as send: a doctype pulled off the allowlist after
-	# the log row was written must not still be resendable.
-	settings = frappe.get_cached_doc("YRP WhatsApp Hub Settings")
-	if not settings.is_doctype_enabled(log.reference_doctype):
-		frappe.throw(
-			_("WhatsApp is not enabled for {0} in YRP WhatsApp Hub Settings").format(_(log.reference_doctype))
-		)
+	sample = get_pdf("<h3>Purchase Order PO-0001</h3><p>Sample supplier document</p>")
+	upload = {
+		"media_type": "document",
+		"filename": "PO-0001.pdf",
+		"mime_type": "application/pdf",
+		"content_base64": base64.b64encode(sample).decode(),
+	}
+	handle = execute("templates.media_upload", upload, channel=channel)["handle"]
+	arguments = {
+		"name": TEMPLATE_NAME,
+		"language": TEMPLATE_LANGUAGE,
+		"category": "UTILITY",
+		"parameter_format": "positional",
+		"components": [
+			{"type": "HEADER", "format": "DOCUMENT", "example": {"header_handle": [handle]}},
+			{
+				"type": "BODY",
+				"text": TEMPLATE_BODY,
+				"example": {"body_text": [["Sample Supplier", "PO-0001", "2026-11-04"]]},
+			},
+		],
+	}
+	return execute("templates.create", arguments, channel=channel)
 
-	variables = frappe.parse_json(log.message_variables) if log.message_variables else {}
-	header_vars = variables.get("header_vars") or None
-	body_vars = variables.get("body_vars") or None
-	header_dict = frappe.parse_json(log.header_source) if log.header_source else None
 
-	from yrp.whatsapp import deliver_whatsapp_template
+@frappe.whitelist(methods=["POST"])
+def setup_supplier_document_actions(channel=None):
+	"""Create or update one Relay Document Action per supplier document. Needs the approved template."""
+	frappe.only_for("System Manager")
+	from relay_core.hub_channels import choose
 
-	result = deliver_whatsapp_template(
-		account_name=log.account or None,
-		to_number=log.mobile_no,
-		template_name=log.template_name,
-		language_code=log.language_code or "en",
-		header_vars=header_vars,
-		body_vars=body_vars,
-		header_source=header_dict,
+	channel = channel or choose("WhatsApp")
+	account = frappe.db.get_value("Relay Channel", channel, "account")
+	template = frappe.db.get_value(
+		"Relay WhatsApp Template",
+		{
+			"account": account,
+			"template_name": TEMPLATE_NAME,
+			"language": TEMPLATE_LANGUAGE,
+			"status": "APPROVED",
+		},
+		"name",
 	)
+	if not template:
+		frappe.throw(_("Meta has not approved the WhatsApp template {0} yet").format(TEMPLATE_NAME))
 
-	# deliver's `raw` is the hub response (a dict); serialize it before trimming
-	# so the audit column update never crashes on a non-string.
-	raw = result.get("raw")
-	if isinstance(raw, dict):
-		raw = frappe.as_json(raw)
-	log.status = "Sent" if result["ok"] else "Failed"
-	log.meta_message_id = result.get("meta_message_id")
-	log.http_status = result.get("http_status")
-	log.gateway_response = (raw or "")[:500]
-	log.meta_error = result.get("meta_error")
-	log.error = result.get("error")
-	log.media_id = result.get("media_id")
-	log.media_mime = result.get("media_mime")
-	log.file_name = result.get("file_name")
-	log.sent_at = frappe.utils.now_datetime() if result["ok"] else None
-	# ignore_links: an audit-log update must not fail (and roll back a just-sent
-	# status) because a linked supplier/contact was deleted after the fact.
-	log.flags.ignore_links = True
-	log.save(ignore_permissions=True)
-
-	if result["ok"]:
-		frappe.msgprint(_("WhatsApp resent to {0}").format(log.mobile_no))
-	else:
-		frappe.msgprint(
-			_("Resend to {0} failed: {1}").format(log.mobile_no, result.get("error")),
-			indicator="red",
+	names = []
+	for doctype, date_field in SUPPLIER_DOCUMENTS.items():
+		print_format = frappe.get_meta(doctype).default_print_format
+		if not print_format:
+			frappe.throw(_("Set a default print format for {0}").format(_(doctype)))
+		title = f"{doctype} to Supplier"
+		if frappe.db.exists("Relay Document Action", title):
+			action = frappe.get_doc("Relay Document Action", title)
+		else:
+			action = frappe.new_doc("Relay Document Action")
+		action.update(
+			{
+				"title": title,
+				"enabled": 1,
+				"document_type": doctype,
+				"label": "Send WhatsApp",
+				"show_button": 0,
+				"business_field": "supplier",
+				"business_doctype": "Supplier",
+				"channel": channel,
+				"template": template,
+				"parameter_mapping": frappe.as_json(["supplier_name", "name", date_field]),
+				"recipients": "Primary contact",
+				"attachment_type": "Print Format",
+				"print_format": print_format,
+				"file_name": "{{doc.name}}",
+			}
 		)
-
-
-@frappe.whitelist()
-def get_enabled_whatsapp_doctypes():
-	"""Every doctype enabled to send WhatsApp messages, with its configured
-	supplier_key. The Desk/Web JS uses this to decide which doctypes show the
-	Send WhatsApp button and which field on the doc to resolve the supplier
-	from (Stock Entry's to_supplier/from_supplier logic branches on this).
-
-	Returns {"doctypes": {<reference_doctype>: <supplier_key>, ...}}.
-	"""
-	settings = frappe.get_cached_doc("YRP WhatsApp Hub Settings")
-	enabled = settings.get_enabled_doctypes()
-	return {"doctypes": {dt: settings.get_supplier_key(dt) for dt in enabled}}
+		action.save()
+		names.append(action.name)
+	return names

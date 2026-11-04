@@ -24,12 +24,6 @@ from yrp.yrp.doctype.yrp_supplier.test_yrp_supplier_notification import (
 	_warehouse,
 )
 
-# send_whatsapp imports `deliver_whatsapp_template` from this module at call
-# time, so patching the source attribute intercepts the hub round-trip.
-DELIVER = "yrp.whatsapp.deliver_whatsapp_template"
-# _log_whatsapp_communication imports `_make` locally; patch the source.
-MAKE_COMM = "frappe.core.doctype.communication.email._make"
-
 
 class TestNotificationTemplateWhatsApp(_NotificationTestBase):
 	def _wa_po(self, mobile="98765 43210"):
@@ -53,83 +47,14 @@ class TestNotificationTemplateWhatsApp(_NotificationTestBase):
 			tmpl.send("SOME-PO", "Cancel", ["919000000000"])  # event != Submit
 		mock_wa.assert_not_called()
 
-	# --- send_whatsapp resolves the template & calls deliver ---------------
+	# --- send_whatsapp only logs: the old hub is gone ----------------------
 
-	def test_send_whatsapp_calls_deliver_with_resolved_template(self):
-		po = self._wa_po()
-		tmpl = _notification_template(
-			f"_T PO WA {frappe.generate_hash(length=6)}",
-			channel="WhatsApp",
-			body="PO {{ doc.name }}",
-		)
-		with (
-			patch.object(
-				NotificationTemplate,
-				"_resolve_whatsapp_template",
-				return_value=("essdee_wa", "order_confirmation", "en"),
-			),
-			patch(DELIVER, return_value={"ok": True, "meta_message_id": "wamid.T"}) as mock_deliver,
-			patch(MAKE_COMM) as mock_make,
-		):
-			tmpl.send_whatsapp(po.name, ["919000000000"])
-		mock_deliver.assert_called_once()
-		kw = mock_deliver.call_args.kwargs
-		self.assertEqual(kw["to_number"], "919000000000")
-		self.assertEqual(kw["template_name"], "order_confirmation")
-		self.assertEqual(kw["language_code"], "en")
-		self.assertEqual(kw["account_name"], "essdee_wa")
-		mock_make.assert_called_once()  # best-effort timeline Communication attempted
-
-	def test_send_whatsapp_msgprints_when_unconfigured(self):
-		po = self._wa_po()
-		tmpl = _notification_template(
-			f"_T PO WA {frappe.generate_hash(length=6)}",
-			channel="WhatsApp",
-		)
-		with (
-			patch.object(NotificationTemplate, "_resolve_whatsapp_template", return_value=None),
-			patch(DELIVER) as mock_deliver,
-		):
-			tmpl.send_whatsapp(po.name, ["919000000000"])  # no throw
-		mock_deliver.assert_not_called()
-
-	# --- Communication failure is isolated (savepoint), never rolls back ---
-
-	def test_communication_failure_is_isolated(self):
-		po = self._wa_po()
-		tmpl = _notification_template(
-			f"_T PO WA Iso {frappe.generate_hash(length=6)}",
-			channel="WhatsApp",
-			body="PO {{ doc.name }}",
-		)
-		# A prior write inside the same transaction that MUST survive.
-		sentinel = frappe.get_doc({"doctype": "ToDo", "description": "wa-iso-sentinel"}).insert(
-			ignore_permissions=True
-		)
-		with (
-			patch.object(
-				NotificationTemplate,
-				"_resolve_whatsapp_template",
-				return_value=("essdee_wa", "order_confirmation", "en"),
-			),
-			patch(DELIVER, return_value={"ok": True, "meta_message_id": "wamid.X"}) as mock_deliver,
-			patch(MAKE_COMM, side_effect=frappe.ValidationError("communication_medium invalid")),
-		):
-			# send_whatsapp must NOT raise even though _make blows up.
-			tmpl.send_whatsapp(po.name, ["919000000000"])
-		mock_deliver.assert_called_once()
-		# The savepoint rollback undid only the failed Communication.
-		self.assertTrue(frappe.db.exists("ToDo", sentinel.name))
-		self.assertFalse(
-			frappe.db.exists(
-				"Communication",
-				{
-					"reference_doctype": "Purchase Order",
-					"reference_name": po.name,
-					"communication_medium": "WhatsApp",
-				},
-			)
-		)
+	def test_send_whatsapp_logs_instead_of_sending(self):
+		tmpl = _notification_template(f"_T PO WA {frappe.generate_hash(length=6)}", channel="WhatsApp")
+		with patch("frappe.log_error") as mock_log:
+			tmpl.send_whatsapp("PO-WA-0001", ["919000000000"])
+		mock_log.assert_called_once()
+		self.assertIn("PO-WA-0001", mock_log.call_args.kwargs["message"])
 
 	# --- the Property Setter makes medium "WhatsApp" a valid option --------
 

@@ -6,10 +6,10 @@ from frappe.tests import IntegrationTestCase
 
 
 class TestWhatsAppHooks(IntegrationTestCase):
-	def test_daily_scheduler_registers_template_sync(self):
-		"""The daily scheduler must call the Task 07 hub template-sync endpoint."""
+	def test_daily_scheduler_has_no_hub_template_sync(self):
+		"""The old hub is gone; Relay Core syncs WhatsApp templates."""
 		daily = frappe.get_hooks("scheduler_events").get("daily") or []
-		self.assertIn("yrp.whatsapp_templates.sync_templates_from_hub", daily)
+		self.assertNotIn("yrp.whatsapp_templates.sync_templates_from_hub", daily)
 
 	def test_property_setter_registered_as_fixture(self):
 		"""Property Setter must be exportable so the WhatsApp medium is never dropped."""

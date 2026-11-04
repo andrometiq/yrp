@@ -218,7 +218,6 @@ has_permission = {
 scheduler_events = {
 	"daily": [
 		"yrp.yrp_stock.doctype.yrp_stock_integrity_check.yrp_stock_integrity_check.run_daily_check",
-		"yrp.whatsapp_templates.sync_templates_from_hub",
 		"yrp.web_reports.cleanup.clear_old_jobs",
 	],
 	"hourly": [
