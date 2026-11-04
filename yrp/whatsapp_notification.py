@@ -37,12 +37,16 @@ def is_relay_installed() -> bool:
 
 @contextmanager
 def relay_user():
-	previous = frappe.session.user
+	"""Run as the Relay send user, then restore the request's session and form data."""
+	session, form_dict = frappe.local.session, frappe.local.form_dict
+	user, sid, data = session.user, session.sid, session.data
 	frappe.set_user(SEND_USER)
 	try:
 		yield
 	finally:
-		frappe.set_user(previous)
+		frappe.set_user(user)
+		session.sid, session.data = sid, data
+		frappe.local.form_dict = form_dict
 
 
 def get_document_actions(doctype: str | None = None) -> list:
