@@ -582,6 +582,17 @@ def _validate_warehouse_permissions(sl_entries):
 		frappe.get_cached_doc("Warehouse", warehouse).check_user_permission()
 
 
+def is_delivery_note_issue(sle) -> bool:
+	"""Whether ``sle`` is the stock-out of a Material Issue posted against a YRP Delivery Note."""
+	if sle.get("voucher_type") != "YRP Stock Entry" or flt(sle.get("qty")) >= 0:
+		return False
+	purpose, against = frappe.db.get_value("YRP Stock Entry", sle.get("voucher_no"), ["purpose", "against"]) or (
+		None,
+		None,
+	)
+	return purpose == "Material Issue" and against == "YRP Delivery Note"
+
+
 def make_sl_entries(
 	sl_entries,
 	cancel=False,
@@ -707,7 +718,9 @@ def make_sl_entries(
 		# Compute reserved-stock fresh from active SREs.
 		from yrp.stock.utils import get_sre_reserved_qty
 
-		args["reserved_stock"] = get_sre_reserved_qty(
+		# A Delivery Note issue has just consumed its own reservation, so other notes'
+		# reservations may exceed what is left; only the negative-stock check applies.
+		args["reserved_stock"] = None if is_delivery_note_issue(args) else get_sre_reserved_qty(
 			item_code=args["item"],
 			warehouse=args["warehouse"],
 			for_update=True,

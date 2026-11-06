@@ -43,7 +43,8 @@ class YRPBin(Document):
 		)
 		if reserved_qty < 0:
 			frappe.throw(_("Reserved Qty cannot be negative."))
-		if get_reservation_shortage(self.actual_qty, reserved_qty):
+		# Only a growing reservation must fit the stock; delivering an over-reserved bucket shrinks it.
+		if reserved_qty > flt(self.reserved_qty) and get_reservation_shortage(self.actual_qty, reserved_qty):
 			frappe.throw(_("Reserved Qty cannot be greater than Actual Qty."))
 		self.db_set("reserved_qty", reserved_qty, update_modified=False)
 		return reserved_qty
