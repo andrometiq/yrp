@@ -444,7 +444,7 @@ class TestPurchaseOrderGRN(FrappeTestCase):
 		self.assertEqual(rows[0]["lot"], "LOT-ROW")
 		self.assertEqual(rows[0]["received_type"], "Accepted")
 
-	def test_draft_rows_left_at_zero_stay_zero_on_reload(self):
+	def test_new_and_draft_rows_start_at_zero_with_pending_reference(self):
 		po_rows = [
 			frappe._dict(
 				name=f"POI-{index}",
@@ -488,7 +488,9 @@ class TestPurchaseOrderGRN(FrappeTestCase):
 			fresh = _pending_purchase_order_rows(po)
 			reloaded = _pending_purchase_order_rows(po, existing_rows=saved)
 
-		self.assertEqual([row["quantity"] for row in fresh], [10, 10, 10])
+		self.assertEqual([row["quantity"] for row in fresh], [0, 0, 0])
+		self.assertEqual([row["stock_qty"] for row in fresh], [0, 0, 0])
+		self.assertEqual([row["pending_quantity"] for row in fresh], [10, 10, 10])
 		self.assertEqual([row["quantity"] for row in reloaded], [4, 0, 0])
 		self.assertEqual([row["max_receivable_quantity"] for row in reloaded], [10, 10, 10])
 

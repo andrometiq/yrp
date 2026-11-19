@@ -186,10 +186,10 @@ class TestGRNExcessAllowance(FrappeTestCase):
 		row = defaults["items"][0]
 		detail = _first_value_detail(defaults)
 
-		self.assertAlmostEqual(flt(row["quantity"]), 100, places=4)
+		self.assertAlmostEqual(flt(row["quantity"]), 0, places=4)
 		self.assertAlmostEqual(flt(row["pending_quantity"]), 100, places=4)
 		self.assertAlmostEqual(flt(row["max_receivable_quantity"]), 125, places=4)
-		self.assertAlmostEqual(flt(detail["qty"]), 100, places=4)
+		self.assertAlmostEqual(flt(detail["qty"]), 0, places=4)
 		self.assertAlmostEqual(flt(detail["max_receivable_quantity"]), 125, places=4)
 
 	def test_09_po_defaults_keep_row_for_remaining_excess_after_pending_zero(self):
