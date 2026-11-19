@@ -2197,18 +2197,17 @@ def _pending_purchase_order_rows(po, existing_rows=None):
 			flt(_remaining_receivable_allowance(row.qty, pending, excess_pct)),
 			0,
 		)
-		# A saved draft dropped the rows the operator left at 0; show them at 0, not pending.
-		quantity = max(pending, 0) if existing_rows is None else 0
 		splits = existing_by_item.get(row.name)
 		if max_receivable <= 0 and not splits:
 			continue
 		out = {
 			"item_variant": row.item_code,
-			"quantity": quantity,
+			# The operator enters the received quantity; pending stays as the reference.
+			"quantity": 0,
 			"uom": row.uom,
 			"stock_uom": row.stock_uom,
 			"conversion_factor": row.conversion_factor,
-			"stock_qty": flt(quantity) * flt(row.conversion_factor or 1),
+			"stock_qty": 0,
 			"pending_quantity": pending,
 			"max_receivable_quantity": max_receivable,
 			"ref_doctype": "Purchase Order Item",
