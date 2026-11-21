@@ -126,7 +126,7 @@ class YRPWorkOrder(Document):
 		if not self.get("receivables"):
 			issues.append(_("There are no receivables on the Work Order."))
 
-		if self.get("production_detail"):
+		if self.get("production_detail") and self.requires_approved_production_detail():
 			status = (
 				attribute_db.get_value(
 					"YRP Item Production Detail",
@@ -144,6 +144,10 @@ class YRPWorkOrder(Document):
 
 		issues.extend(self.get_process_cost_readiness_issues())
 		return issues
+
+	def requires_approved_production_detail(self):
+		"""Base policy: every Work Order needs an Approved IPD; company apps may relax it."""
+		return True
 
 	def get_process_cost_readiness_issues(self):
 		"""Return shared Process Cost blockers; company apps may extend this."""
