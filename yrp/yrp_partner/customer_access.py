@@ -130,8 +130,7 @@ def _customer_references(user, partner=None):
 			WHERE assignment.parenttype='Sales Person' AND assignment.parentfield='yrp_customers'
 			AND assignment.customer=customer_scope.name AND person.name IN ({people})
 			AND person.enabled=1 AND person.is_group=0
-			AND COALESCE(person.yrp_sales_partner, '') != ''
-			AND person.yrp_sales_partner=customer_scope.default_sales_partner)""")
+			AND COALESCE(person.yrp_sales_partner, '') != '')""")
 	return f"""SELECT customer_scope.name FROM `tabCustomer` customer_scope
 		WHERE ({" OR ".join(conditions)}) AND COALESCE(customer_scope.disabled, 0)=0"""
 
