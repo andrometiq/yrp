@@ -38,6 +38,7 @@ class YRPWorkOrderCorrection(Document):
 		from yrp.stock.uom import apply_item_uoms
 
 		apply_item_uoms((self.get("deliverables") or []) + (self.get("receivables") or []))
+		self.set_stock_dimension_values()
 		docstatus, open_status = frappe.db.get_value(
 			"YRP Work Order", self.work_order, ["docstatus", "open_status"]
 		) or (None, None)
@@ -49,6 +50,21 @@ class YRPWorkOrderCorrection(Document):
 			frappe.throw(_("Add at least one deliverable or receivable row."))
 		self.set_pending_quantities()
 		self.set_status()
+
+	def set_stock_dimension_values(self):
+		"""Fill blank row dimensions from the Work Order header, then the stock defaults."""
+		from yrp.stock.dimensions import apply_dimension_defaults, get_dimension_fieldnames
+
+		rows = (self.get("deliverables") or []) + (self.get("receivables") or [])
+		if not rows or not self.work_order:
+			return
+		work_order = frappe.get_doc("YRP Work Order", self.work_order)
+		for fieldname in get_dimension_fieldnames():
+			value = work_order.get(fieldname)
+			for row in rows:
+				if value and row.meta.get_field(fieldname) and not row.get(fieldname):
+					row.set(fieldname, value)
+		apply_dimension_defaults(rows)
 
 	def set_pending_quantities(self):
 		if self.docstatus != 0:
