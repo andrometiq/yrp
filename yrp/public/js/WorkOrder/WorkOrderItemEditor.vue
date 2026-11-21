@@ -57,6 +57,8 @@ const props = defineProps({
 	returnMode: { type: Boolean, default: false },
 	allowExcess: { type: Boolean, default: false },
 	aggregatePhysicalRows: { type: Boolean, default: false },
+	docstatus: { type: Number, default: null },
+	allowedItemNames: { type: Array, default: () => [] },
 });
 
 const SECONDARY_COLUMNS = [
@@ -71,7 +73,7 @@ const SECONDARY_COLUMNS = [
     },
 ];
 
-const docstatus = ref(cur_frm.doc.docstatus || 0);
+const docstatus = ref(props.docstatus ?? (cur_frm.doc.docstatus || 0));
 const items = ref([]);
 const lotOptions = ref({});
 const lotFieldname = ref('');
@@ -206,15 +208,16 @@ const args = computed(() => ({
         if (props.editorType === 'purchase_order') {
             return { filters: { disabled: 0 } };
         }
-        if (!allowedItems.value.length) {
+        const allowed = props.allowedItemNames.length ? props.allowedItemNames : allowedItems.value;
+        if (!allowed.length) {
             return { filters: { disabled: 0 } };
         }
-        return { filters: { disabled: 0, name: ['in', allowedItems.value] } };
+        return { filters: { disabled: 0, name: ['in', allowed] } };
     },
 }));
 
 function update_status() {
-    docstatus.value = cur_frm.doc.docstatus || 0;
+    docstatus.value = props.docstatus ?? (cur_frm.doc.docstatus || 0);
 }
 
 function _set_allowed_items(data) {
