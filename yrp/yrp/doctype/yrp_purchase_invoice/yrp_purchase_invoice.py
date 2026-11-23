@@ -370,7 +370,7 @@ def fetch_grn_details(grns, against, supplier, purchase_invoice=None):
 				# The no-match fallback keeps the GRN line rate so a stray row still
 				# bills *something* rather than silently zeroing — it should not occur
 				# in practice; if it does it signals a WO/GRN data mismatch to chase.
-				process_cost_rate = _get_wo_process_cost(work_order, grn_item.item_variant, set_combination)
+				process_cost_rate = _get_wo_process_cost(work_order, grn_item)
 				conversion_factor = flt(grn_item.stock_qty) / qty if qty and flt(grn_item.stock_qty) else 1
 				rate = (
 					process_cost_rate * conversion_factor
@@ -602,15 +602,23 @@ def _get_item_group(item_variant):
 	return frappe.db.get_value("Item", item, "item_group") if item else None
 
 
-def _get_wo_process_cost(work_order, item_variant, set_combination):
-	"""Per-unit Process Cost the Work Order resolved for this receivable variant.
-	Work Order.set_receivable_process_costs writes it to receivable.cost (via
-	get_process_cost_rate). Returns None when no receivable matches the variant,
-	so the caller can fall back to the GRN line rate."""
-	for row in work_order.get("receivables") or []:
-		if row.item_variant == item_variant and _normal_json(row.get("set_combination")) == set_combination:
+def _get_wo_process_cost(work_order, grn_item):
+	"""Per-unit Process Cost of the GRN row's planned Work Order receivable.
+	Matches the receivable by variant, else by the row's `ref_docname` (Actual
+	Dia receipts carry a variant the Work Order did not plan). Returns None when
+	neither matches, so the caller can fall back to the GRN line rate."""
+	set_combination = _normal_json(grn_item.get("set_combination"))
+	receivables = work_order.get("receivables") or []
+	for row in receivables:
+		if (
+			row.item_variant == grn_item.item_variant
+			and _normal_json(row.get("set_combination")) == set_combination
+		):
 			return flt(row.get("cost"))
-	return None
+	if grn_item.get("ref_doctype") != "YRP Work Order Receivables":
+		return None
+	planned = next((row for row in receivables if row.name == grn_item.get("ref_docname")), None)
+	return flt(planned.get("cost")) if planned else None
 
 
 def _get_po_material_rate(grn, grn_item):

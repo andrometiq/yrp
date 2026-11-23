@@ -6,6 +6,7 @@ from frappe.utils import cint, flt, getdate, nowdate, nowtime
 from yrp import attribute_links as attribute_db
 from yrp.attribute_links import value as _attribute_value
 from yrp.yrp.doctype.yrp_item.yrp_item import get_parent_item
+from yrp.yrp.doctype.yrp_process_cost.yrp_process_cost import is_flat_process_cost
 
 
 class YRPWorkOrder(Document):
@@ -380,15 +381,33 @@ class YRPWorkOrder(Document):
 		When the Process Cost attribute also exists on the calculated finished
 		items, its price is a finished-item rate. Spread that finished-item value
 		over the matching receivable quantity instead of repeating the complete
-		rate on every output row. Company apps can override this method when their
-		production model has a more specific output-allocation rule.
+		rate on every output row. Only receivables of the Process Cost item carry
+		its rate; other items, such as folding cloth, get 0.
 		"""
-		if self._apply_calculated_item_process_costs(process_cost):
-			return
-		self._apply_direct_receivable_process_costs(process_cost)
+		receivables = self.get_process_cost_receivables(process_cost)
+		rated = {id(row) for row in receivables}
+		for row in self.receivables:
+			if id(row) not in rated:
+				set_receivable_process_cost(row, process_cost.name, 0)
+		if receivables:
+			self.apply_item_receivable_process_costs(process_cost, receivables)
 
-	def _apply_calculated_item_process_costs(self, process_cost):
-		attribute = process_cost.get("attribute") if process_cost.get("depends_on_attribute") else None
+	def get_process_cost_receivables(self, process_cost):
+		"""Return the receivables whose item is the Process Cost item."""
+		if not process_cost.get("item"):
+			return list(self.receivables)
+		item = process_cost.item.casefold()
+		items = get_variant_items([row.item_variant for row in self.receivables])
+		return [row for row in self.receivables if (items.get(row.item_variant) or "").casefold() == item]
+
+	def apply_item_receivable_process_costs(self, process_cost, receivables):
+		"""Rate the Process Cost item receivables; company apps may override."""
+		if self._apply_calculated_item_process_costs(process_cost, receivables):
+			return
+		self._apply_direct_receivable_process_costs(process_cost, receivables)
+
+	def _apply_calculated_item_process_costs(self, process_cost, receivables):
+		attribute = None if is_flat_process_cost(process_cost) else process_cost.attribute
 		calculated_items = self.get("work_order_calculated_items") or []
 		if not attribute or not calculated_items:
 			return False
@@ -412,7 +431,7 @@ class YRPWorkOrder(Document):
 			group["quantity"] += flt(row.quantity)
 
 		receivable_groups = {}
-		for row in self.receivables:
+		for row in receivables:
 			attribute_value = attributes(row.item_variant).get(attribute)
 			if not attribute_value or attribute_value not in calculated_groups:
 				return False
@@ -435,8 +454,8 @@ class YRPWorkOrder(Document):
 				set_receivable_process_cost(row, process_cost.name, unit_rate)
 		return True
 
-	def _apply_direct_receivable_process_costs(self, process_cost):
-		for row in self.receivables:
+	def _apply_direct_receivable_process_costs(self, process_cost, receivables):
+		for row in receivables:
 			rate = get_process_cost_rate(row.item_variant, row.qty, process_cost)
 			set_receivable_process_cost(row, process_cost.name, rate)
 
@@ -563,19 +582,15 @@ def get_process_cost_rate(item_variant, quantity, process_cost):
 		process_cost.get("process_cost_values") or [],
 		key=lambda row: flt(row.min_order_qty),
 	)
-	attribute_value = None
-	if process_cost.depends_on_attribute:
-		attribute_value = attributes.get(process_cost.attribute)
+	is_flat = is_flat_process_cost(process_cost)
+	attribute_value = None if is_flat else attributes.get(process_cost.attribute)
 
 	rate = 0
 	order_quantity = 0
 	low_price = 0
 	found = False
 	for cost_row in cost_rows:
-		if (
-			process_cost.depends_on_attribute
-			and _attribute_value(cost_row.attribute_value) != attribute_value
-		):
+		if not is_flat and _attribute_value(cost_row.attribute_value) != attribute_value:
 			continue
 		min_order_qty = flt(cost_row.min_order_qty)
 		if min_order_qty > flt(quantity):
@@ -606,6 +621,20 @@ def get_receivable_stock_quantity(row):
 		conversion = get_conversion_factor(row.item_variant, row.uom)
 		factor = flt(conversion.get("conversion_factor")) or 1
 	return flt(row.qty) * factor
+
+
+def get_variant_items(item_variants):
+	"""Map each Item Variant to its parent Item (itself when it is not a variant).
+
+	Item names are case-insensitive, so variant_of may differ in case from the Item name.
+	"""
+	rows = frappe.get_all(
+		"Item",
+		filters={"name": ["in", list(set(item_variants))]},
+		fields=["name", "variant_of"],
+		as_list=True,
+	)
+	return {name: variant_of or name for name, variant_of in rows}
 
 
 def get_variant_attributes(item_variant):

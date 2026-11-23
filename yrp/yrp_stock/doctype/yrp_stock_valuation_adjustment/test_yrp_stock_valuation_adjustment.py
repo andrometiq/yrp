@@ -685,6 +685,55 @@ class TestStockValuationAdjustment(FrappeTestCase):
 			"Reversed",
 		)
 
+	def test_work_order_close_write_off_without_links_is_terminal(self):
+		from yrp.stock.stock_ledger import make_sl_entries
+
+		# Roll back with the test: the write-off SLE points at a real Work Order.
+		frappe.db.savepoint("close_write_off_test")
+		self.addCleanup(frappe.db.rollback, save_point="close_write_off_test")
+		with patch.object(frappe.db, "commit"):
+			warehouse = _warehouse("Close Write Off")
+			receipt = _stock_entry(
+				self.item,
+				self.uom,
+				self.dimensions,
+				"Material Receipt",
+				10,
+				10,
+				to_warehouse=warehouse,
+				posting_time="09:15:00",
+			)
+			make_sl_entries(
+				[
+					{
+						"item": self.item,
+						"warehouse": warehouse,
+						"uom": self.uom,
+						"voucher_type": "YRP Work Order",
+						"voucher_no": frappe.db.get_value("YRP Work Order", {}, "name"),
+						"voucher_detail_no": "_test-close-row",
+						"posting_date": nowdate(),
+						"posting_time": "09:16:00",
+						"qty": -10,
+						"rate": 0,
+						"outgoing_rate": 10,
+						"is_cancelled": 0,
+						**self.dimensions,
+					}
+				]
+			)
+
+			adjustment, _sle_name = self._adjust(receipt, 10)
+			parent = frappe.db.get_value(
+				"YRP Stock Valuation Adjustment",
+				adjustment,
+				["status", "propagated_stock_difference", "terminal_difference"],
+				as_dict=True,
+			)
+			self.assertEqual(parent.status, "Completed")
+			self.assertAlmostEqual(flt(parent.propagated_stock_difference), 0)
+			self.assertAlmostEqual(flt(parent.terminal_difference), 10)
+
 	def test_adjustment_crosses_a_persisted_production_link(self):
 		input_warehouse = _warehouse("Production Input")
 		output_warehouse = _warehouse("Production Output")
@@ -791,6 +840,135 @@ class TestStockValuationAdjustment(FrappeTestCase):
 			frappe.db.get_value("YRP Stock Valuation Production Link", link_name, "active"),
 			0,
 		)
+
+	def test_inline_adjustment_run_clears_the_source_stale_flag(self):
+		warehouse = _warehouse("Inline Stale")
+		receipt = _stock_entry(
+			self.item,
+			self.uom,
+			self.dimensions,
+			"Material Receipt",
+			10,
+			10,
+			to_warehouse=warehouse,
+		)
+		sle_name = frappe.db.get_value(
+			"YRP Stock Ledger Entry",
+			{"voucher_no": receipt.name, "qty": [">", 0], "is_cancelled": 0},
+			"name",
+		)
+		# A synchronous queue (migrate, enqueue(now=True)) completes the SVA during submit.
+		with patch(
+			"yrp.yrp_stock.doctype.yrp_stock_valuation_adjustment.yrp_stock_valuation_adjustment.enqueue_adjustment",
+			side_effect=lambda adjustment, retry=False: process_adjustment(adjustment),
+		):
+			adjustment = create_adjustment(
+				adjustment_type="Work Order Excess Usage",
+				source_doctype=receipt.doctype,
+				source_name=receipt.name,
+				effective_date=receipt.posting_date,
+				allocations=[
+					{
+						"target_sle": sle_name,
+						"item": self.item,
+						"quantity": 10,
+						"old_rate": 10,
+						"new_rate": 11,
+						"difference": 10,
+						"allocation_weight": 10,
+						"stock_dimensions": frappe.as_json(self.dimensions),
+					}
+				],
+				idempotency_key=f"test-inline:{receipt.name}",
+			)
+
+		self.assertEqual(
+			frappe.db.get_value("YRP Stock Valuation Adjustment", adjustment, "status"), "Completed"
+		)
+		self.assertEqual(frappe.db.get_value("YRP Stock Ledger Entry", sle_name, "valuation_is_stale"), 0)
+
+	def test_paths_converging_on_one_output_are_applied_as_one_entry(self):
+		input_warehouse = _warehouse("Converging Input")
+		output_warehouse = _warehouse("Converging Output")
+		receipt = _stock_entry(
+			self.item,
+			self.uom,
+			self.dimensions,
+			"Material Receipt",
+			10,
+			10,
+			to_warehouse=input_warehouse,
+			posting_time="09:30:00",
+		)
+		consumptions = [
+			_stock_entry(
+				self.item,
+				self.uom,
+				self.dimensions,
+				"Material Issue",
+				3,
+				0,
+				from_warehouse=input_warehouse,
+				posting_time=posting_time,
+			)
+			for posting_time in ("09:31:00", "09:32:00")
+		]
+		output = _stock_entry(
+			self.item,
+			self.uom,
+			self.dimensions,
+			"Material Receipt",
+			6,
+			20,
+			to_warehouse=output_warehouse,
+			posting_time="09:33:00",
+		)
+		output_sle = frappe.db.get_value(
+			"YRP Stock Ledger Entry",
+			{"voucher_no": output.name, "qty": [">", 0], "is_cancelled": 0},
+			"name",
+		)
+		for consumption in consumptions:
+			register_production_links(
+				consumption.doctype,
+				consumption.name,
+				[
+					{
+						"consumption_sle": frappe.db.get_value(
+							"YRP Stock Ledger Entry",
+							{"voucher_no": consumption.name, "qty": ["<", 0], "is_cancelled": 0},
+							"name",
+						),
+						"output_receipt_sle": output_sle,
+						"source_row": consumption.items[0].name,
+						"input_quantity": 3,
+						"allocation_weight": 3,
+						"stock_dimensions": frappe.as_json(self.dimensions),
+					}
+				],
+			)
+
+		adjustment, _sle_name = self._adjust(receipt, 10)
+		output_entries = frappe.get_all(
+			"YRP Stock Valuation Propagation Entry",
+			filters={"adjustment": adjustment, "target_sle": output_sle},
+			fields=["difference", "status"],
+		)
+		parent = frappe.db.get_value(
+			"YRP Stock Valuation Adjustment",
+			adjustment,
+			["status", "propagated_stock_difference", "terminal_difference"],
+			as_dict=True,
+		)
+		self.assertEqual(len(output_entries), 1)
+		self.assertAlmostEqual(flt(output_entries[0].difference), 6)
+		self.assertAlmostEqual(
+			flt(frappe.db.get_value("YRP Stock Ledger Entry", output_sle, "valuation_adjustment_value")),
+			6,
+		)
+		self.assertEqual(parent.status, "Completed")
+		self.assertAlmostEqual(flt(parent.propagated_stock_difference), 10)
+		self.assertAlmostEqual(flt(parent.terminal_difference), 0)
 
 	def test_late_consumption_can_revalue_an_earlier_production_output(self):
 		input_warehouse = _warehouse("Late Production Input")

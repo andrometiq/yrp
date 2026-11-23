@@ -77,6 +77,11 @@ class YRPProcessCost(Document):
 			frappe.throw(_("At least one Process Cost Value must have a price greater than 0."))
 
 
+def is_flat_process_cost(process_cost):
+	"""A cost without an Attribute is flat, even when Depends On Attribute is checked."""
+	return not (process_cost.get("depends_on_attribute") and process_cost.get("attribute"))
+
+
 def update_all_expired_process_cost():
 	"""Cancel all expired Process Costs. Called by daily scheduler."""
 	filters = [

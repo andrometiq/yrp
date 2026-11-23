@@ -22,7 +22,7 @@ from yrp.yrp.doctype.yrp_goods_received_note.test_purchase_order_grn import (
 	_warehouse,
 )
 from yrp.yrp.doctype.yrp_item.yrp_item import get_parent_item
-from yrp.yrp.doctype.yrp_purchase_invoice.yrp_purchase_invoice import PurchaseInvoice
+from yrp.yrp.doctype.yrp_purchase_invoice.yrp_purchase_invoice import PurchaseInvoice, _get_wo_process_cost
 
 
 def _work_order_for_invoice(qty=5):
@@ -167,6 +167,31 @@ class TestPurchaseInvoice(FrappeTestCase):
 		)
 		setting.start()
 		self.addCleanup(setting.stop)
+
+	def test_wo_process_cost_resolves_actual_dia_row_through_its_receivable_reference(self):
+		work_order = frappe._dict(
+			receivables=[
+				frappe._dict(name="planned-26", item_variant="Cloth-26", set_combination="{}", cost=20),
+				frappe._dict(name="planned-32", item_variant="Cloth-32", set_combination="{}", cost=21),
+			]
+		)
+		planned_row = frappe._dict(
+			item_variant="Cloth-26",
+			set_combination="{}",
+			ref_doctype="YRP Work Order Receivables",
+			ref_docname="planned-32",
+		)
+		actual_dia_row = frappe._dict(
+			item_variant="Cloth-30",
+			set_combination="{}",
+			ref_doctype="YRP Work Order Receivables",
+			ref_docname="planned-32",
+		)
+		unplanned_row = frappe._dict(item_variant="Cloth-30", set_combination="{}")
+
+		self.assertEqual(_get_wo_process_cost(work_order, planned_row), 20)
+		self.assertEqual(_get_wo_process_cost(work_order, actual_dia_row), 21)
+		self.assertIsNone(_get_wo_process_cost(work_order, unplanned_row))
 
 	def test_supplier_is_not_masked_for_invoice_users(self):
 		frappe.set_user("Guest")

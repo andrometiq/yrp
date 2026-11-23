@@ -210,7 +210,8 @@ def create_adjustment(
 		if existing:
 			return existing[0][0]
 		raise
-	doc.submit()
+	# Mark before submit: a synchronous queue completes the SVA inside submit,
+	# and its completion must be the last writer of the stale flag.
 	for target_sle in target_sles:
 		frappe.db.set_value(
 			"YRP Stock Ledger Entry",
@@ -219,6 +220,7 @@ def create_adjustment(
 			1,
 			update_modified=False,
 		)
+	doc.submit()
 	return doc.name
 
 
@@ -308,11 +310,7 @@ def create_purchase_invoice_adjustment(invoice):
 			if quantity <= 0 or stock_quantity <= 0:
 				continue
 			if work_order:
-				stock_process_rate = _get_wo_process_cost(
-					work_order,
-					grn_item.item_variant,
-					_normal_json(grn_item.get("set_combination")),
-				)
+				stock_process_rate = _get_wo_process_cost(work_order, grn_item)
 				billing_rate = (
 					flt(stock_process_rate) * stock_quantity / quantity
 					if stock_process_rate is not None
@@ -753,6 +751,29 @@ def _queue_propagation_entry(
 			frappe.throw(
 				_("Downstream receipt Stock Ledger Entry {0} is no longer active.").format(target_sle)
 			)
+		# Converging paths add to the target's unapplied entry, so each receipt
+		# is replayed once per wave instead of once per path.
+		pending = frappe.db.sql(
+			"""
+			SELECT name, difference
+			FROM `tabYRP Stock Valuation Propagation Entry`
+			WHERE adjustment=%s AND target_sle=%s AND status='Pending'
+			ORDER BY creation, name
+			LIMIT 1
+			FOR UPDATE
+			""",
+			(adjustment, target_sle),
+			as_dict=True,
+		)
+		if pending:
+			frappe.db.set_value(
+				"YRP Stock Valuation Propagation Entry",
+				pending[0].name,
+				"difference",
+				flt(flt(pending[0].difference) + difference, 6),
+				update_modified=False,
+			)
+			return pending[0].name
 	doc = frappe.get_doc(
 		{
 			"doctype": "YRP Stock Valuation Propagation Entry",
@@ -1203,7 +1224,8 @@ def _requires_persisted_lineage(outgoing_sle):
 	)
 	if not row:
 		return False
-	if row.voucher_type in {"YRP Delivery Challan", "YRP Goods Received Note", "YRP Work Order"}:
+	# A Work Order voucher SLE is a close write-off: production links are its only lineage.
+	if row.voucher_type in {"YRP Delivery Challan", "YRP Goods Received Note"}:
 		return True
 	if row.voucher_type == "YRP Stock Entry":
 		purpose = frappe.db.get_value("YRP Stock Entry", row.voucher_no, "purpose")
