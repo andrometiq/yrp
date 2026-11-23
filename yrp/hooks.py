@@ -212,6 +212,34 @@ has_permission = {
 # 	}
 # }
 
+# JSON fields that store stock-dimension values by name; rewritten when a dimension record is renamed.
+stock_dimension_json_fields = {
+	"YRP Stock Valuation Production Link": ["stock_dimensions"],
+	"YRP Stock Valuation Propagation Entry": ["stock_dimensions"],
+	"YRP Stock Valuation Adjustment Source": ["stock_dimensions"],
+	"YRP Work Order Excess Usage Item": ["stock_dimensions"],
+	"YRP Stock Integrity Check Item": ["dimensions_json"],
+	"YRP Work Order": ["deliverable_details", "receivable_details"],
+	"YRP Work Order Correction": ["deliverable_details", "receivable_details"],
+	"YRP Delivery Challan": ["item_details", "correction_item_details"],
+	"YRP Goods Received Note": ["item_details", "correction_item_details"],
+	"YRP Stock Entry": ["item_details"],
+	"YRP Stock Update": ["item_details"],
+	"YRP Stock Reconciliation": ["item_details"],
+	"YRP Inspection Entry": ["item_details"],
+	"YRP Production Order": ["item_details"],
+	"Purchase Order": ["item_details"],
+}
+
+# JSON fields keyed by a dimension value, per dimension fieldname.
+stock_dimension_keyed_json_fields = {
+	"received_type": {
+		"YRP Work Order": ["received_types_json", "completed_items_json", "incompleted_items_json"],
+		"YRP Work Order Calculated Item": ["received_type_json"],
+		"YRP Goods Received Note Item": ["received_types", "secondary_qty_json"],
+	},
+}
+
 # Scheduled Tasks
 # ---------------
 
@@ -288,6 +316,7 @@ doc_events = {
 		"on_trash": "yrp.yrp_partner.permissions.prevent_partner_write",
 		"on_update": "yrp.yrp_partner.sync.sync_document",
 		"on_update_after_submit": "yrp.yrp_partner.sync.sync_document",
+		"after_rename": "yrp.stock.dimension_rename.rename_dimension_json_values",
 	},
 	"YRP Stock Settings": {
 		"on_update": "yrp.stock.dimensions.clear_dimension_cache",
