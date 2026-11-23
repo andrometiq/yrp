@@ -190,6 +190,9 @@ class TestBillTracking(FrappeTestCase):
 	def test_07_cancel_sets_status_and_history(self):
 		bill = _bill()
 		bill.submit()
+		if "essdee_yrp" in frappe.get_installed_apps():
+			# The host app cancels only after its cancellation request is approved.
+			bill.db_set("form_status", "Cancel Request Approved")
 		cancel_fn = frappe.get_attr("yrp.yrp.doctype.yrp_bill_tracking.yrp_bill_tracking.cancel_vendor_bill")
 		cancel_fn(bill.name, "duplicate bill")
 		bill.reload()
