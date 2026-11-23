@@ -44,6 +44,44 @@ class TestStockShortage(UnitTestCase):
 	def test_empty_report_does_not_throw(self):
 		StockShortageReport(precision=3).throw()
 
+	def test_row_links_the_entry_that_last_reduced_the_bucket(self):
+		entry = frappe._dict(
+			voucher_type="YRP Delivery Challan",
+			voucher_no="DC<1>",
+			posting_datetime=get_datetime("2026-11-20 09:05:07"),
+			qty=-4.0,
+		)
+		report = StockShortageReport(precision=3)
+		with patch("yrp.stock.shortage.get_last_reducing_entry", return_value=entry) as lookup:
+			report.add(
+				"Fabric", "S-0163", 1, 5, " (Lot F1)", dimensions={"lot": "F1"}, as_of="2026-11-21 10:00:00"
+			)
+			message = report.get_message()
+		lookup.assert_called_once_with(
+			"Fabric", "S-0163", {"lot": "F1"}, as_of="2026-11-21 10:00:00", exclude_entry=None
+		)
+		self.assertIn("Fabric (Lot F1) at S-0163: balance 1.0, requested 5.0, short 4.0", message)
+		self.assertIn(
+			'Last reduced by <a href="/app/yrp-delivery-challan/DC%3C1%3E">YRP Delivery Challan DC&lt;1&gt;</a> '
+			"on 20-11-2026 09:05 (qty -4.0)",
+			message,
+		)
+
+	def test_row_without_dimensions_skips_the_lookup(self):
+		report = StockShortageReport(precision=3)
+		with patch("yrp.stock.shortage.get_last_reducing_entry") as lookup:
+			report.add("Fabric", "S-0163", 1, 5)
+			message = report.get_message()
+		lookup.assert_not_called()
+		self.assertNotIn("Last reduced", message)
+
+	def test_row_says_so_when_nothing_reduced_the_bucket(self):
+		report = StockShortageReport(precision=3)
+		with patch("yrp.stock.shortage.get_last_reducing_entry", return_value=None):
+			report.add("Fabric", "S-0163", 0, 5, dimensions={"lot": "F1"})
+			message = report.get_message()
+		self.assertIn("No earlier entry reduced this stock.", message)
+
 
 class TestStockShortageLedger(FrappeTestCase):
 	@classmethod
@@ -327,6 +365,33 @@ class TestStockShortageLedger(FrappeTestCase):
 		self.assertIn(f"{frappe.utils.escape_html(fabric)}", message)
 		self.assertIn("balance 5.0, requested 7.0, short 2.0", message)
 		self.assertIn("balance 1.0, requested 3.0, short 2.0", message)
+
+	def test_shortage_links_the_entry_that_last_reduced_the_stock(self):
+		warehouse = self._warehouse()
+		self._move("Material Receipt", warehouse, 5)
+		reducer = self._stock_entry("Material Issue", warehouse, {self.items[0]: 3})
+		reducer.submit()
+		with self.assertRaises(NegativeStockError) as raised:
+			self._move("Material Issue", warehouse, 4)
+		message = str(raised.exception)
+		self.assertIn("balance 2.0, requested 4.0, short 2.0", message)
+		self.assertIn(
+			f'Last reduced by <a href="/app/yrp-stock-entry/{reducer.name}">YRP Stock Entry {reducer.name}</a>',
+			message,
+		)
+		self.assertIn("(qty -3.0)", message)
+
+	def test_backdated_shortage_names_the_future_entry_and_the_last_reducer(self):
+		yesterday = add_days(nowdate(), -1)
+		warehouse = self._warehouse()
+		self._move("Material Receipt", warehouse, 5, (yesterday, "01:00:00"))
+		future = self._stock_entry("Material Issue", warehouse, {self.items[0]: 5}, (yesterday, "03:00:00"))
+		future.submit()
+		with self.assertRaises(NegativeStockError) as raised:
+			self._move("Material Issue", warehouse, 1, (yesterday, "02:00:00"))
+		message = str(raised.exception)
+		self.assertIn(f"needed by YRP Stock Entry {future.name}", message)
+		self.assertIn('Last reduced by <a href="/app/yrp-stock-entry/', message)
 
 	def test_stock_update_reduce_sums_rows_per_bucket_and_lists_every_short_item(self):
 		warehouse = self._warehouse()

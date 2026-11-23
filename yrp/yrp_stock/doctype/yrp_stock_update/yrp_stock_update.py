@@ -93,7 +93,9 @@ class YRPStockUpdate(Document):
 				row.available_stock = actual
 			details = get_dimension_text(bucket.dimensions)
 			allows_negative = _item_allows_negative_stock(bucket.item)
-			if not allows_negative and report.add(bucket.item, self.warehouse, actual, bucket.qty, details):
+			if not allows_negative and report.add(
+				bucket.item, self.warehouse, actual, bucket.qty, details, dimensions=bucket.dimensions
+			):
 				continue
 			reserved = flt(actual) - flt(available)
 			shortage = get_reservation_shortage(flt(actual) - bucket.qty, reserved, report.precision)

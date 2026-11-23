@@ -27,7 +27,7 @@ class ProcessCostStockUnitsTest(unittest.TestCase):
 			patch(MODULE + ".get_process_cost_rate", return_value=5),
 			patch("yrp.stock.utils.get_conversion_factor", return_value={"conversion_factor": 5}),
 		):
-			self.assertTrue(WorkOrder._apply_calculated_item_process_costs(wo, pc))
+			self.assertTrue(WorkOrder._apply_calculated_item_process_costs(wo, pc, wo.receivables))
 		self.assertEqual(output.cost, 5)
 		self.assertEqual(output.total_cost, 1500)
 		# A 15-box GRN must add 75 pieces * Rs 5, not 75 * Rs 25.

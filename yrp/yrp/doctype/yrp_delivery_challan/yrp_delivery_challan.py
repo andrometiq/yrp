@@ -4,6 +4,7 @@ from frappe.model.document import Document
 from frappe.utils import flt, formatdate, nowdate, nowtime
 
 from yrp.stock.shortage import StockShortageReport, get_dimension_text, get_stock_shortage
+from yrp.stock.utils import get_combine_datetime
 
 
 class YRPDeliveryChallan(Document):
@@ -303,6 +304,8 @@ class YRPDeliveryChallan(Document):
 					bucket["qty"],
 					get_dimension_text(bucket["dims"]) + as_of,
 					_received_type_hint(bucket, self.from_warehouse, is_rework),
+					dimensions=bucket["dims"],
+					as_of=get_combine_datetime(self.posting_date, self.posting_time),
 				)
 		report.throw()
 
