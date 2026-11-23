@@ -61,6 +61,15 @@ class YRPWorkOrder(Document):
 				)
 			)
 
+	def set_party_names(self):
+		"""Refresh the read-only party names; `fetch_if_empty` keeps a stale name after a party change."""
+		for link_field, name_field in (
+			("supplier", "supplier_name"),
+			("delivery_location", "delivery_location_name"),
+		):
+			party = self.get(link_field)
+			self.set(name_field, frappe.db.get_value("Supplier", party, "supplier_name") if party else None)
+
 	def set_stock_dimension_values(self):
 		"""Populate Work Order child dimensions through the shared stock model."""
 		from yrp.stock.dimensions import apply_dimension_defaults, get_stock_dimensions
@@ -89,6 +98,7 @@ class YRPWorkOrder(Document):
 			self.terms_and_condition = get_default_terms("WO", self.supplier)
 
 	def validate(self):
+		self.set_party_names()
 		self.set_missing_dates()
 		self.set_pending_quantities()
 		self.validate_rework_source_refs()
