@@ -8,6 +8,7 @@ from frappe.utils import flt, get_datetime
 
 from yrp.stock.job_worker_variant import get_job_worker_stock_variant
 from yrp.stock.shortage import StockShortageReport
+from yrp.stock.utils import get_combine_datetime
 from yrp.yrp.doctype.yrp_delivery_challan.yrp_delivery_challan import (
 	_apply_dimension_values_to_rows,
 	_copy_header_dimensions_to_items,
@@ -791,15 +792,23 @@ class YRPGoodsReceivedNote(Document):
 					).format(flt(qty), flt(pending), dc_item.name)
 				)
 			dims = _delivery_challan_item_dimension_values(dc_item)
+			stock_variant = get_job_worker_stock_variant(self, dc_item.item_variant)
 			balance = get_stock_balance(
-				get_job_worker_stock_variant(self, dc_item.item_variant),
+				stock_variant,
 				self.from_warehouse,
 				posting_date=self.posting_date,
 				posting_time=self.posting_time,
 				**dims,
 			)
 			report.add(
-				dc_item.item_variant, self.from_warehouse, balance, qty, _(" (supplier-side rework stock)")
+				dc_item.item_variant,
+				self.from_warehouse,
+				balance,
+				qty,
+				_(" (supplier-side rework stock)"),
+				dimensions=dims,
+				as_of=get_combine_datetime(self.posting_date, self.posting_time),
+				ledger_item=stock_variant,
 			)
 		report.throw()
 
@@ -1168,7 +1177,15 @@ def _validate_return_quantities(grn):
 			posting_time=grn.posting_time,
 			**bucket["dimensions"],
 		)
-		report.add(bucket["item"], grn.from_warehouse, available, bucket["stock_qty"], _(" (return stock)"))
+		report.add(
+			bucket["item"],
+			grn.from_warehouse,
+			available,
+			bucket["stock_qty"],
+			_(" (return stock)"),
+			dimensions=bucket["dimensions"],
+			as_of=get_combine_datetime(grn.posting_date, grn.posting_time),
+		)
 	report.throw()
 
 

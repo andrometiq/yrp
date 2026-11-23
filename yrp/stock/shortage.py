@@ -1,6 +1,8 @@
+from urllib.parse import quote
+
 import frappe
 from frappe import _
-from frappe.utils import escape_html, flt
+from frappe.utils import escape_html, flt, get_datetime
 
 
 def get_stock_qty_precision() -> int:
@@ -43,10 +45,26 @@ class StockShortageReport:
 		self.precision = get_stock_qty_precision() if precision is None else precision
 		self.rows = []
 
-	def add(self, item, warehouse, available, required, details="", hint="", shortage=None) -> bool:
+	def add(
+		self,
+		item,
+		warehouse,
+		available,
+		required,
+		details="",
+		hint="",
+		shortage=None,
+		*,
+		dimensions=None,
+		as_of=None,
+		exclude_entry=None,
+		ledger_item=None,
+	) -> bool:
 		"""Record the bucket when it is short; returns whether it was.
 
-		``shortage`` overrides the available-vs-required rule, e.g. for a reservation shortage."""
+		``shortage`` overrides the available-vs-required rule, e.g. for a reservation shortage.
+		``dimensions`` lets the message name the ledger entry that last reduced the bucket up to ``as_of``;
+		``ledger_item`` is the stock item when ``item`` is only its display name."""
 		if shortage is None:
 			shortage = get_stock_shortage(available, required, self.precision)
 		if shortage:
@@ -59,6 +77,11 @@ class StockShortageReport:
 					available=flt(available, self.precision),
 					required=flt(required, self.precision),
 					shortage=shortage,
+					last_reduced=get_last_reducing_entry_text(
+						ledger_item or item, warehouse, dimensions, as_of=as_of, exclude_entry=exclude_entry
+					)
+					if dimensions
+					else "",
 				)
 			)
 		return bool(shortage)
@@ -84,7 +107,8 @@ class StockShortageReport:
 			row.required,
 			row.shortage,
 		)
-		return text + (f". {escape_html(row.hint.strip())}" if row.hint else "")
+		text += f". {escape_html(row.hint.strip())}" if row.hint else ""
+		return text + (f"<br>{row.last_reduced}" if row.last_reduced else "")
 
 	def throw(self):
 		if not self.rows:
@@ -94,6 +118,42 @@ class StockShortageReport:
 		frappe.throw(self.get_message(), exc=NegativeStockError, title=_("Insufficient Stock"))
 
 
+def get_last_reducing_entry(item, warehouse, dimensions, as_of=None, exclude_entry=None):
+	"""Latest live ledger row that took stock out of the (item, warehouse, dimensions) bucket."""
+	filters = {"item": item, "warehouse": warehouse, "is_cancelled": 0, "qty": ("<", 0)}
+	filters.update({fieldname: value for fieldname, value in dimensions.items() if value})
+	if as_of:
+		filters["posting_datetime"] = ("<=", as_of)
+	if exclude_entry:
+		filters["name"] = ("!=", exclude_entry)
+	entries = frappe.get_all(
+		"YRP Stock Ledger Entry",
+		filters=filters,
+		fields=["voucher_type", "voucher_no", "posting_datetime", "qty"],
+		order_by="posting_datetime desc, creation desc",
+		limit=1,
+	)
+	return entries[0] if entries else None
+
+
+def get_last_reducing_entry_text(item, warehouse, dimensions, as_of=None, exclude_entry=None) -> str:
+	"""HTML line naming the entry that last reduced the bucket, linked so the user can open and cancel it."""
+	entry = get_last_reducing_entry(item, warehouse, dimensions, as_of=as_of, exclude_entry=exclude_entry)
+	if not entry:
+		return escape_html(_("No earlier entry reduced this stock."))
+	return _("Last reduced by {0} on {1} (qty {2})").format(
+		get_document_link(entry.voucher_type, entry.voucher_no),
+		get_datetime(entry.posting_datetime).strftime("%d-%m-%Y %H:%M"),
+		flt(entry.qty),
+	)
+
+
+def get_document_link(doctype, name) -> str:
+	"""Desk link labelled "<doctype> <name>", which /web maps to its own document page."""
+	href = f"/app/{frappe.scrub(doctype).replace('_', '-')}/{quote(str(name), safe='')}"
+	return f'<a href="{escape_html(href)}">{escape_html(doctype)} {escape_html(name)}</a>'
+
+
 def validate_voucher_stock(sl_entries, allow_negative_stock=False):
 	"""Pre-screen a voucher's outgoing ledger rows and report every short bucket at once.
 
@@ -101,7 +161,7 @@ def validate_voucher_stock(sl_entries, allow_negative_stock=False):
 	posting time. The valuation engine still validates each row, including future balances."""
 	from yrp.stock.dimensions import get_dimension_fieldnames
 	from yrp.stock.stock_ledger import _item_allows_negative_stock
-	from yrp.stock.utils import get_stock_balance
+	from yrp.stock.utils import get_combine_datetime, get_stock_balance
 
 	if allow_negative_stock:
 		return
@@ -114,7 +174,13 @@ def validate_voucher_stock(sl_entries, allow_negative_stock=False):
 			bucket.item, bucket.warehouse, bucket.posting_date, bucket.posting_time, **bucket.dimensions
 		)
 		report.add(
-			bucket.item, bucket.warehouse, available, -bucket.qty, get_dimension_text(bucket.dimensions)
+			bucket.item,
+			bucket.warehouse,
+			available,
+			-bucket.qty,
+			get_dimension_text(bucket.dimensions),
+			dimensions=bucket.dimensions,
+			as_of=get_combine_datetime(bucket.posting_date, bucket.posting_time),
 		)
 	report.throw()
 

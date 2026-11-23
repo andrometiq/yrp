@@ -22,7 +22,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, formatdate, getdate, nowdate
+from frappe.utils import cint, flt, formatdate, get_datetime, getdate, nowdate
 
 from yrp.stock.dimensions import (
 	assert_safe_fieldname,
@@ -30,6 +30,8 @@ from yrp.stock.dimensions import (
 	get_valuation_dimensions,
 )
 from yrp.stock.shortage import (
+	StockShortageReport,
+	get_dimension_text,
 	get_reservation_shortage,
 	get_stock_qty_precision,
 	get_stock_shortage,
@@ -1263,12 +1265,7 @@ class UpdateEntriesAfter:
 		precision = get_stock_qty_precision()
 		requested = abs(flt(sle.qty))
 		if not self.allow_negative_stock and get_stock_shortage(current_dim_qty, requested, precision):
-			frappe.throw(
-				_("Insufficient stock for {0} at {1}: balance {2}, requested {3}").format(
-					sle.item, sle.warehouse, flt(current_dim_qty, precision), flt(requested, precision)
-				),
-				exc=NegativeStockError,
-			)
+			self.throw_shortage(sle, current_dim_qty, requested)
 		if not self.allow_negative_stock and requested > current_dim_qty:
 			# Shortfall within precision (16.95 against 16.949999): the row consumes exactly what is
 			# left, so qty, queue and value all reach zero and no residual negative balance exists.
@@ -1277,6 +1274,29 @@ class UpdateEntriesAfter:
 
 		valuator.remove_stock(requested, flt(sle.outgoing_rate))
 		return round_off_if_near_zero(current_dim_qty - requested)
+
+	def throw_shortage(self, sle, balance, requested):
+		"""Report the short bucket, naming a later voucher the replay would leave short."""
+		dimensions = self._dimension_values(sle)
+		details = get_dimension_text(dimensions)
+		if (sle.voucher_type, sle.voucher_no) != (self.args.get("voucher_type"), self.args.get("voucher_no")):
+			details += _(" needed by {0} {1} on {2}").format(
+				_(sle.voucher_type),
+				sle.voucher_no,
+				get_datetime(sle.posting_datetime).strftime("%d-%m-%Y %H:%M"),
+			)
+		report = StockShortageReport()
+		report.add(
+			sle.item,
+			sle.warehouse,
+			balance,
+			requested,
+			details,
+			dimensions=dimensions,
+			as_of=sle.posting_datetime,
+			exclude_entry=sle.name,
+		)
+		report.throw()
 
 	def _update_valuation_and_write(self, sle, valuator, dim_key):
 		"""Update shared valuation state and write computed values to the SLE.

@@ -182,6 +182,7 @@ class YRPInspectionEntry(Document):
 				balance,
 				out_qty,
 				_(" ({0}, to reclassify)").format(source_rt),
+				dimensions=dim_filters,
 			)
 		report.throw()
 
