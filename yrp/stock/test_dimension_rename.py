@@ -1,6 +1,6 @@
+import frappe
 from frappe.tests import UnitTestCase
 
-import frappe
 from yrp.stock.dimension_rename import escape_like, replace_dimension_key, replace_dimension_value
 
 

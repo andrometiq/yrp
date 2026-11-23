@@ -2,6 +2,7 @@ import json
 
 import frappe
 from frappe import _
+
 from yrp.stock.dimensions import assert_safe_fieldname, get_stock_dimensions
 
 VALUE_FIELDS_HOOK = "stock_dimension_json_fields"
