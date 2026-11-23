@@ -297,7 +297,7 @@ def issue_delivery_note_stock(doc, method=None):
 	for row, stock_qty in issues:
 		warehouses[row.warehouse].append((row, stock_qty))
 	entries = [
-		make_issue_entry(doc, note, warehouse, warehouses[warehouse]) for warehouse in sorted(warehouses)
+		make_issue_entry(note, warehouse, warehouses[warehouse]) for warehouse in sorted(warehouses)
 	]
 	doc.db_set("yrp_stock_entries", "\n".join(entries), update_modified=False)
 	note.update_billing()
@@ -377,7 +377,8 @@ def lock_stock_buckets(issues):
 	)
 
 
-def make_issue_entry(invoice, note, warehouse, issues):
+def make_issue_entry(note, warehouse, issues):
+	"""Issue the invoiced rows' stock now: dispatch happens at submit, whatever the invoice date."""
 	entry = frappe.get_doc(
 		{
 			"doctype": STOCK_ENTRY,
@@ -385,9 +386,6 @@ def make_issue_entry(invoice, note, warehouse, issues):
 			"from_warehouse": warehouse,
 			"against": DELIVERY_NOTE,
 			"against_id": note.name,
-			"edit_posting_date_and_time": 1,
-			"posting_date": invoice.posting_date,
-			"posting_time": invoice.posting_time,
 			"items": [get_issue_row(row, stock_qty) for row, stock_qty in issues],
 		}
 	)
