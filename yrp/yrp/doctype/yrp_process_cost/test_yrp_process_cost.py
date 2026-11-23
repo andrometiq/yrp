@@ -22,9 +22,14 @@ class TestYRPProcessCost(TestCase):
 		frappe.db.savepoint(self.savepoint)
 		self.addCleanup(frappe.db.rollback, save_point=self.savepoint)
 		self.addCleanup(frappe.set_user, "Administrator")
-		self.assertEqual(get_workflow("YRP Process Cost").name, "Process Cost Workflow")
-		self.purchase_user = self.make_user("user", "Purchase User")
-		self.purchase_manager = self.make_user("manager", "Purchase Manager")
+		workflow = get_workflow("YRP Process Cost")
+		self.assertEqual(workflow.name, "Process Cost Workflow")
+		# A host app may map the shipped Purchase roles to its own roles.
+		allowed = {(row.state, row.action): row.allowed for row in workflow.transitions}
+		self.user_role = allowed[("Draft", "Submit")]
+		self.manager_role = allowed[("Approval Pending", "Reject")]
+		self.purchase_user = self.make_user("user", self.user_role)
+		self.purchase_manager = self.make_user("manager", self.manager_role)
 		self.other_user = self.make_user("other", "System Manager")
 		self.uom = _ensure_uom("Nos")
 		self.item = _simple_item_variant(self.uom).name
@@ -123,7 +128,7 @@ class TestYRPProcessCost(TestCase):
 	def test_purchase_manager_can_revise_rejected_cost(self):
 		doc = self.make_rejected_cost()
 		frappe.set_user(self.purchase_manager)
-		self.assertNotIn("Purchase User", frappe.get_roles())
+		self.assertNotIn(self.user_role, frappe.get_roles())
 		doc = apply_workflow(doc, "Revise")
 		doc.reload()
 		self.assertEqual((doc.workflow_state, doc.docstatus), ("Draft", 0))
@@ -132,7 +137,7 @@ class TestYRPProcessCost(TestCase):
 	def test_user_without_purchase_roles_cannot_revise_rejected_cost(self):
 		doc = self.make_rejected_cost()
 		frappe.set_user(self.other_user)
-		self.assertTrue({"Purchase User", "Purchase Manager"}.isdisjoint(frappe.get_roles()))
+		self.assertTrue({self.user_role, self.manager_role}.isdisjoint(frappe.get_roles()))
 		self.assertTrue(frappe.has_permission("YRP Process Cost", "read", doc=doc))
 		self.assertTrue(frappe.has_permission("YRP Process Cost", "write", doc=doc))
 		with self.assertRaises(WorkflowTransitionError):

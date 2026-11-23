@@ -94,3 +94,25 @@ class TestWorkOrderHeaderFields(FrappeTestCase):
 
 		self.assertEqual(work_order.is_internal_unit, 1)
 		self.assertEqual(work_order.is_manual_entry, 1)
+
+	def test_party_names_follow_a_changed_supplier_and_delivery_location(self):
+		work_order = frappe.new_doc("YRP Work Order")
+		work_order.update(
+			{
+				"supplier": "NEW-SUPPLIER",
+				"supplier_name": "OLD SUPPLIER NAME",
+				"delivery_location": "NEW-LOCATION",
+				"delivery_location_name": "OLD LOCATION NAME",
+			}
+		)
+		names = {"NEW-SUPPLIER": "New Supplier", "NEW-LOCATION": "New Location"}
+
+		def get_value(doctype, name, fieldname, **kwargs):
+			self.assertEqual((doctype, fieldname), ("Supplier", "supplier_name"))
+			return names[name]
+
+		with patch.object(frappe.db, "get_value", side_effect=get_value):
+			work_order.set_party_names()
+
+		self.assertEqual(work_order.supplier_name, "New Supplier")
+		self.assertEqual(work_order.delivery_location_name, "New Location")

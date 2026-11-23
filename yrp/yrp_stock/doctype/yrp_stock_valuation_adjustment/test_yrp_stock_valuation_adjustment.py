@@ -118,6 +118,13 @@ class TestStockValuationAdjustment(FrappeTestCase):
 		)
 		setting.start()
 		self.addCleanup(setting.stop)
+		# process_adjustment commits, so a real job would reach the site's live RQ
+		# worker and race the test. Tests run each adjustment step themselves.
+		worker = patch(
+			"yrp.yrp_stock.doctype.yrp_stock_valuation_adjustment.yrp_stock_valuation_adjustment.enqueue_adjustment"
+		)
+		worker.start()
+		self.addCleanup(worker.stop)
 
 	def _adjust(self, receipt, difference, *, apply=True):
 		sle = frappe.db.get_value(
