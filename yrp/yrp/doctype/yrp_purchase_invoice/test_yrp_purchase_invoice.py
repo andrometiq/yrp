@@ -5,12 +5,12 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import flt, nowdate
 
+from yrp.stock.dimensions import get_stock_dimensions
 from yrp.stock.test_uom import _dependent_item_variant, _ensure_uom
 from yrp.yrp.doctype.yrp_goods_received_note.test_purchase_order_grn import (
 	_address,
 	_default_received_type,
 	_item_uom,
-	_item_variant_for_production_dimensions,
 	_process,
 	_process_cost,
 	_production_group_dimensions,
@@ -25,16 +25,34 @@ from yrp.yrp.doctype.yrp_item.yrp_item import get_parent_item
 from yrp.yrp.doctype.yrp_purchase_invoice.yrp_purchase_invoice import PurchaseInvoice, _get_wo_process_cost
 
 
+def _own_production_group_dimensions(item):
+	"""Create fresh production groups for the test Item instead of reusing live ones."""
+	values = {}
+	for dimension in get_stock_dimensions():
+		if not dimension.get("is_production_group"):
+			continue
+		meta = frappe.get_meta(dimension["dimension_doctype"])
+		doc = frappe.new_doc(meta.name)
+		if (meta.autoname or "").startswith("field:"):
+			doc.set(meta.autoname.split(":", 1)[1], f"_Test PI WO {frappe.generate_hash(length=8)}")
+		if meta.has_field("item"):
+			doc.item = item
+		values[dimension["fieldname"]] = doc.insert(ignore_permissions=True).name
+	return values
+
+
 def _work_order_for_invoice(qty=5):
-	dimensions = _production_group_dimensions()
-	item_variant = _item_variant_for_production_dimensions(_test_item_variant(), dimensions)
+	item_variant = _test_item_variant()
 	parent_item = get_parent_item(item_variant)
+	dimensions = _own_production_group_dimensions(parent_item)
 	uom = frappe.db.get_value("Item", parent_item, "stock_uom") or "Piece"
 	supplier = _supplier(f"_Test PI WO Supplier {frappe.generate_hash(length=6)}")
 	delivery_location = _supplier(f"_Test PI WO Delivery {frappe.generate_hash(length=6)}")
 	process_name = _process("_Test PI WO Process")
-	_supplier_warehouse(supplier, f"_Test PI WO Supplier WH {frappe.generate_hash(length=6)}")
-	_supplier_warehouse(delivery_location, f"_Test PI WO Delivery WH {frappe.generate_hash(length=6)}")
+	for party, label in ((supplier, "Supplier"), (delivery_location, "Delivery")):
+		# A host app may already create the party's Warehouse; a second one is ambiguous.
+		if not frappe.db.exists("Warehouse", {"supplier": party, "disabled": 0}):
+			_supplier_warehouse(party, f"_Test PI WO {label} WH {frappe.generate_hash(length=6)}")
 	_process_cost(process_name, parent_item, supplier, dimensions)
 	wo = frappe.get_doc(
 		{
