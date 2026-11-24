@@ -42,7 +42,7 @@ class YRPStockValuationAdjustment(Document):
 		if not self.get("source_allocations"):
 			frappe.throw(_("At least one source allocation is required."))
 		self.total_source_difference = flt(sum(flt(row.difference) for row in self.source_allocations), 6)
-		if abs(self.total_source_difference) <= VALUE_TOLERANCE:
+		if not any(abs(flt(row.difference)) > VALUE_TOLERANCE for row in self.source_allocations):
 			frappe.throw(_("The stock valuation difference is zero."))
 		if not self.idempotency_key:
 			self.idempotency_key = _hash_key(

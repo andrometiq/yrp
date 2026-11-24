@@ -536,6 +536,72 @@ class TestPurchaseInvoice(FrappeTestCase):
 			28,
 		)
 
+	def test_rebalanced_rates_with_unchanged_total_move_value_between_receipts(self):
+		supplier = _supplier(f"_Test PI Rebalance Supplier {frappe.generate_hash(length=6)}")
+		grns = []
+		for rate in (25, 35):
+			po = _purchase_order(
+				qty=2,
+				warehouse=_warehouse(f"_Test_PI_Rebalance_WH_{frappe.generate_hash(length=6)}"),
+				supplier=supplier,
+				rate=rate,
+			)
+			grn = _purchase_order_grn(po, qty=2)
+			grn.submit()
+			grns.append(grn)
+		data = _fetch_grn_details([grn.name for grn in grns], "Purchase Order", supplier)
+		invoice = frappe.get_doc(
+			{
+				"doctype": "YRP Purchase Invoice",
+				"supplier": supplier,
+				"billing_supplier": supplier,
+				"against": "Purchase Order",
+				"bill_no": f"BILL-{frappe.generate_hash(length=6)}",
+				"bill_date": nowdate(),
+				"allow_to_change_rate": 1,
+				"grn": [{"grn": grn.name} for grn in grns],
+				"items": data["items"],
+				**data.get("additional_field_values", {}),
+			}
+		)
+		invoice.insert(ignore_permissions=True)
+		for row in invoice.get("essdee_items") or invoice.get("items"):
+			row.rate = 30
+		invoice.save(ignore_permissions=True)
+		with patch(
+			"yrp.yrp_stock.doctype.yrp_stock_valuation_adjustment.yrp_stock_valuation_adjustment.enqueue_adjustment"
+		):
+			invoice.submit()
+
+		adjustment = frappe.db.get_value(
+			"YRP Stock Valuation Adjustment",
+			{"source_doctype": invoice.doctype, "source_name": invoice.name},
+			["name", "total_source_difference"],
+			as_dict=True,
+		)
+		self.assertIsNotNone(adjustment)
+		self.assertAlmostEqual(flt(adjustment.total_source_difference), 0)
+
+		from yrp.yrp_stock.doctype.yrp_stock_valuation_adjustment.yrp_stock_valuation_adjustment import (
+			process_adjustment,
+		)
+
+		process_adjustment(adjustment.name)
+		self.assertEqual(
+			frappe.db.get_value("YRP Stock Valuation Adjustment", adjustment.name, "status"), "Completed"
+		)
+		moved_values = [
+			flt(
+				frappe.db.get_value(
+					"YRP Stock Ledger Entry",
+					{"voucher_no": grn.name, "qty": [">", 0], "is_cancelled": 0},
+					"valuation_adjustment_value",
+				)
+			)
+			for grn in grns
+		]
+		self.assertEqual(moved_values, [10, -10])
+
 	def test_legacy_purchase_order_invoice_does_not_require_receipt_sle(self):
 		po = _purchase_order(
 			qty=2,
