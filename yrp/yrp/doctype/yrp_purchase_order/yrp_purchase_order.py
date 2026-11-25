@@ -764,20 +764,51 @@ def reopen_purchase_order(purchase_order):
 
 
 @frappe.whitelist()
+def get_close_permission():
+	roles = set(frappe.get_roles(frappe.session.user))
+	return {"is_close_manager": bool(roles & get_purchase_order_manager_roles())}
+
+
+@frappe.whitelist()
 def close_or_open_purchase_orders(names, close):
-	if not frappe.has_permission("Purchase Order", "write"):
-		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	"""Close or reopen each PO in its own savepoint; returns {done, skipped: [{name, reason}]}."""
+	frappe.only_for(get_purchase_order_manager_roles())
+	names = frappe.parse_json(names) if isinstance(names, str) else names
+	close = close.lower() == "true" if isinstance(close, str) else bool(close)
+	done, skipped = [], []
+	for index, name in enumerate(names, start=1):
+		reason = get_open_status_skip_reason(name, close)
+		if reason:
+			skipped.append({"name": name, "reason": reason})
+			continue
+		savepoint = f"po_open_status_{index}"
+		frappe.db.savepoint(savepoint)
+		try:
+			set_open_status(name, "Close" if close else "Open")
+			done.append(name)
+		except Exception as error:
+			frappe.db.rollback(save_point=savepoint)
+			frappe.clear_messages()
+			skipped.append({"name": name, "reason": str(error) or _("Failed.")})
+	return {"done": done, "skipped": skipped}
 
-	if isinstance(names, str):
-		names = json.loads(names)
-	if isinstance(close, str):
-		close = close.lower() == "true"
 
-	for name in names:
-		if close:
-			close_purchase_order(name)
-		else:
-			reopen_purchase_order(name)
+def get_open_status_skip_reason(name, close):
+	row = frappe.db.get_value(
+		"Purchase Order", name, ["is_yrp_managed", "docstatus", "open_status"], as_dict=True
+	)
+	if not row:
+		return _("Purchase Order not found.")
+	if not row.is_yrp_managed:
+		return _("Not YRP managed.")
+	if row.docstatus != 1:
+		return _("Not submitted.")
+	is_closed = row.open_status in ("Close", "Closed")
+	if close and is_closed:
+		return _("Already closed.")
+	if not close and not is_closed:
+		return _("Already open.")
+	return None
 
 
 def close_received_po():
