@@ -223,7 +223,9 @@ class YRPDeliveryChallan(Document):
 			row.ref_doctype = "YRP Work Order Deliverables"
 			row.ref_docname = target.name
 			row.pending_quantity = target.pending_quantity
+		self.validate_against_correction_pending()
 
+	def validate_against_correction_pending(self):
 		corr_cache = {}
 		for row in self.get("correction_items") or []:
 			name = row.work_order_correction
@@ -323,7 +325,9 @@ class YRPDeliveryChallan(Document):
 
 		if changed:
 			_update_work_order_status(self.work_order)
+		self.update_correction_deliverables(cancel=cancel)
 
+	def update_correction_deliverables(self, cancel=False):
 		by_corr = {}
 		for row in self.get("correction_items") or []:
 			by_corr.setdefault(row.work_order_correction, []).append(row)
