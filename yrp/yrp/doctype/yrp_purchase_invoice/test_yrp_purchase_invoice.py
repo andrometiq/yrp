@@ -833,3 +833,49 @@ class TestPurchaseInvoice(FrappeTestCase):
 				"current_valuation_rate",
 			)
 			self.assertAlmostEqual(flt(current_rate), 13)
+
+
+class TestWorkOrderCloseBypass(FrappeTestCase):
+	OPEN_STATUS = {"all_closed": False, "open_work_orders": ["WO-OPEN"], "close_request_wos": []}
+
+	def approve_open_invoice(self, roles):
+		module = "yrp.yrp.doctype.yrp_purchase_invoice.yrp_purchase_invoice"
+		doc = frappe._dict(name="PI-1", docstatus=0, against="YRP Work Order", senior_merch_approved_by=None)
+		doc.append = lambda *args: None
+		doc.save = lambda **kwargs: None
+		with (
+			patch.object(frappe, "get_doc", return_value=doc),
+			patch.object(frappe, "get_roles", return_value=roles),
+			patch(f"{module}.get_merch_roles", return_value="merch_manager"),
+			patch(f"{module}._override_pi_approve", return_value=False),
+			patch(f"{module}.check_all_wo_closed", return_value=self.OPEN_STATUS),
+		):
+			return frappe.get_attr(f"{module}.approve_invoice")("PI-1")
+
+	def test_system_manager_approves_with_open_work_order(self):
+		self.assertEqual(self.approve_open_invoice(["Merch Manager", "System Manager"]), "Approved")
+
+	def test_other_approver_is_blocked_by_open_work_order(self):
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "Cannot approve before closing all Work Orders: WO-OPEN"
+		):
+			self.approve_open_invoice(["Merch Manager"])
+
+	def test_system_manager_submits_approved_invoice_with_open_work_order(self):
+		module = "yrp.yrp.doctype.yrp_purchase_invoice.yrp_purchase_invoice"
+		doc = frappe._dict(grn=[1], items=[1], against="YRP Work Order", approved_by="a@b.c")
+		doc.get = lambda key: doc[key]
+		for roles, blocked in ((["System Manager"], False), (["Merch Manager"], True)):
+			with (
+				self.subTest(roles=roles),
+				patch.object(frappe, "get_roles", return_value=roles),
+				patch(f"{module}._override_pi_approve", return_value=False),
+				patch(f"{module}.check_all_wo_closed", return_value=self.OPEN_STATUS),
+				patch(f"{module}.update_wo_billed_qty") as update_billed,
+			):
+				if blocked:
+					with self.assertRaisesRegex(frappe.ValidationError, "All Work Orders must be closed"):
+						PurchaseInvoice.before_submit(doc)
+				else:
+					PurchaseInvoice.before_submit(doc)
+					update_billed.assert_called_once_with(doc)

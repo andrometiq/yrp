@@ -63,7 +63,7 @@ class YRPPurchaseInvoice(Document):
 			override_pi_approve = _override_pi_approve()
 			if not override_pi_approve and not self.approved_by:
 				frappe.throw(_("Invoice is not approved."))
-			if not override_pi_approve:
+			if not is_work_order_close_check_skipped():
 				status = check_all_wo_closed(self.name)
 				if not status["all_closed"]:
 					frappe.throw(_("All Work Orders must be closed before submitting this invoice."))
@@ -488,7 +488,11 @@ def approve_invoice(name, comments=None):
 		frappe.throw(_("Only draft invoices can be approved."))
 
 	role = get_merch_roles()
-	if doc.against == "YRP Work Order" and role == "merch_manager" and not _override_pi_approve():
+	if (
+		doc.against == "YRP Work Order"
+		and role == "merch_manager"
+		and not is_work_order_close_check_skipped()
+	):
 		status = check_all_wo_closed(doc.name)
 		if not status["all_closed"]:
 			frappe.throw(
@@ -736,6 +740,11 @@ def _is_active_invoice(name):
 
 def _override_pi_approve():
 	return bool(attribute_db.get_single_value("YRP Settings", "override_pi_approve"))
+
+
+def is_work_order_close_check_skipped():
+	"""System Manager may approve and submit before the invoice's Work Orders are closed."""
+	return _override_pi_approve() or "System Manager" in frappe.get_roles()
 
 
 PurchaseInvoice = YRPPurchaseInvoice
