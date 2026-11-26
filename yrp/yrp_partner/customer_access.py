@@ -94,6 +94,12 @@ def _source_references(doctype, user, partner=None):
 		AND {source_is_active(doctype, "source_record")}{selected}"""
 
 
+def with_read_references(query, doctype, user):
+	"""Union `yrp_partner_read_references` hook subqueries onto a read-only reference query."""
+	extra = (frappe.get_attr(path)(doctype, user) for path in frappe.get_hooks("yrp_partner_read_references"))
+	return " UNION ".join([query, *filter(None, extra)])
+
+
 def get_memberships(user, require_scope_role=True):
 	"""Live reference memberships, ordered as the Partner list; sourceless types remain members."""
 	rows = frappe.db.sql(
@@ -279,7 +285,7 @@ def _customer_query_condition(doctype, user=None, table=None):
 	table = table or f"`tab{doctype.replace('`', '``')}`"
 	customers = _customer_references(user)
 	if doctype == "Customer":
-		return f"{table}.name IN ({customers})"
+		return f"{table}.name IN ({with_read_references(customers, 'Customer', user)})"
 	if doctype in {"YRP Sales Order", "Sales Invoice", "YRP Delivery Note"}:
 		return f"{table}.customer IN ({customers})"
 	if doctype == "Quotation":
@@ -294,7 +300,7 @@ def _customer_query_condition(doctype, user=None, table=None):
 		return f"{table}.customer IN ({customers})"
 	if doctype == "YRP Retailer":
 		direct = _source_references("YRP Retailer", user)
-		return f"({table}.name IN ({direct}) OR {table}.customer IN ({customers}))"
+		return f"({table}.name IN ({direct}) OR {table}.customer IN ({with_read_references(customers, 'Customer', user)}))"
 	if doctype in {"YRP Visit", "YRP Retail Order"}:
 		retailers = customer_query_condition("YRP Retailer", user, "retailer_scope")
 		return f"""({table}.customer IN ({customers}) OR {table}.retailer IN

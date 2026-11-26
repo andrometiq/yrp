@@ -86,7 +86,7 @@ doctype_js = {
 	"Contact": "public/js/partner_contacts.js",
 	"Address": "public/js/partner_contacts.js",
 	"YRP Partner": "public/js/partner_contacts.js",
-	"Sales Person": ["public/js/partner_contacts.js", "public/js/sales_person.js"],
+	"Sales Person": "public/js/partner_contacts.js",
 	"Employee": "public/js/partner_contacts.js",
 	"YRP Retailer": "public/js/partner_contacts.js",
 	"Item": "public/js/item.js",

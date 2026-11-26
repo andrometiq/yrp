@@ -22,9 +22,9 @@ def validate_sales_person(doc, method=None):
 
 
 def assigned_customers(sales_person):
-	"""Read current assignments of an enabled leaf; Customers may belong to any partner.
+	"""Read current assignments of an enabled leaf; the Customer may belong to any partner.
 
-	Read the database rather than a cached actor document.
+	Read the database rather than a cached actor document, so revocations apply immediately.
 	"""
 	if not sales_person or not frappe.get_meta("Sales Person").has_field("yrp_sales_partner"):
 		return set()

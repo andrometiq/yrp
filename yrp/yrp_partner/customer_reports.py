@@ -332,7 +332,9 @@ class CustomerReportMixin:
 				self.disable_prepared_report_automation = 1
 			return super().is_permitted()
 		_request_options()
-		if (self.name not in CUSTOMER_REPORTS or not customer_names()
+		# Visit reports are scoped by YRP Visit permissions, not by assigned customers.
+		if (self.name not in CUSTOMER_REPORTS
+				or (self.name not in SALES_REP_REPORTS and not customer_names())
 				or self.ref_doctype != CUSTOMER_REPORTS[self.name]
 				or self.report_type != "Script Report" or self.is_standard != "Yes"
 				or self.get("disabled") or self.get("snapshot_report")

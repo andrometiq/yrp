@@ -403,6 +403,20 @@ class TestCustomerReports(unittest.TestCase):
 			_Report("Sales Rep Visit Details").execute_module({}), ("native execution", {})
 		)
 
+	def test_sales_rep_reports_need_no_assigned_customers(self):
+		"""A sales person with no customers still runs the visit reports, but no customer report."""
+		self.memberships.return_value = []
+		self.roles.return_value = ["YRP Sales Person"]
+		for name in reports.SALES_REP_REPORTS:
+			with self.subTest(name=name):
+				self.assertEqual(_Report(name).is_permitted(), "native permission")
+		self.assertEqual(
+			_Report("Sales Rep Performance").execute_module({}), ("native execution", {})
+		)
+		self.assertFalse(_Report("General Ledger").is_permitted())
+		self.assertFalse(_Report("Sales Rep Visit Details", ref_doctype="GL Entry").is_permitted())
+		self.assertFalse(_Report("Sales Rep Visit Details", custom_report=1).is_permitted())
+
 	def test_portal_reports_run_natively_with_only_owned_customer_and_partner(self):
 		self.roles.return_value = ["YRP Sales Partner"]
 		self.enterContext(patch.object(frappe, "db", Mock(exists=Mock(return_value=True))))

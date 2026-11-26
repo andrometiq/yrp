@@ -62,9 +62,13 @@ def protected(doctype):
 
 
 def _references(doctype, user):
-	"""Build a subquery from current membership, never from a cached list of IDs."""
-	from yrp.yrp_partner.customer_access import _source_references
-	return _source_references(doctype, user)
+	"""Build a subquery from current membership, never from a cached list of IDs.
+
+	Hook Customers widen Customer and Retailer reads in customer_access only, not records linked to them.
+	"""
+	from yrp.yrp_partner.customer_access import _source_references, with_read_references
+	query = _source_references(doctype, user)
+	return query if doctype == "Customer" else with_read_references(query, doctype, user)
 
 
 def _processing_account_condition(customers, table):

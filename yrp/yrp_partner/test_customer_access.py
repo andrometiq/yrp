@@ -195,7 +195,7 @@ class TestCustomerAccess(unittest.TestCase):
 		for person in people:
 			self.link(user, "Sales Person", person.name)
 		self.assertEqual(access.customer_names(user.name), {self.own.name, self.foreign.name})
-		# An assignment stays a grant after its Customer changes partners.
+		# An assignment still grants after its Customer changes partners.
 		frappe.db.set_value("Customer", self.own.name, "default_sales_partner", self.foreign.default_sales_partner)
 		self.assertEqual(access.customer_names(user.name), {self.own.name, self.foreign.name})
 		frappe.db.set_value("Sales Person", people[1].name, "enabled", 0)
