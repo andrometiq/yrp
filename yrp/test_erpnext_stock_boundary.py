@@ -89,6 +89,30 @@ class TestERPNextStockBoundary(UnitTestCase):
 			with self.assertRaisesRegex(frappe.ValidationError, "primary_attribute"):
 				YRPItemMixin._validate_yrp_stock_mutation(current)
 
+	def test_blank_primary_attribute_saved_as_none_is_not_a_change(self):
+		before = frappe._dict(
+			stock_uom="Nos",
+			is_stock_item=1,
+			variant_of=None,
+			has_variants=1,
+			primary_attribute="",
+			dependent_attribute=None,
+			dependent_attribute_mapping=None,
+			item_tuple_attribute=None,
+			attributes=[frappe._dict(attribute="Size", attribute_value=None, mapping="MAP-1")],
+		)
+		current = frappe._dict(before.copy())
+		current.name = "ITEM-TEMPLATE"
+		current.primary_attribute = None
+		current.is_new = lambda: False
+		current.get_doc_before_save = lambda: before
+
+		with patch(
+			"yrp.yrp.doctype.yrp_item.yrp_item._item_family_has_yrp_stock",
+			return_value=True,
+		):
+			YRPItemMixin._validate_yrp_stock_mutation(current)
+
 	def test_physical_variant_tuple_is_locked_after_yrp_stock(self):
 		before = frappe._dict(
 			stock_uom="Nos",
