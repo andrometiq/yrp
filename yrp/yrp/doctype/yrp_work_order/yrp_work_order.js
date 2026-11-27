@@ -48,6 +48,7 @@ frappe.ui.form.on("YRP Work Order", {
 			add_create_rework_button(frm);
 		}
 		add_create_debit_button(frm);
+		add_secondary_qty_button(frm);
 	},
 
 	validate(frm) {
@@ -92,6 +93,73 @@ function add_close_button(frm) {
 			});
 		},
 	});
+}
+
+const SECONDARY_QTY_METHOD = "yrp.yrp.doctype.yrp_work_order.yrp_work_order";
+
+function add_secondary_qty_button(frm) {
+	if (frm.is_new() || frm.doc.docstatus === 2 || !frm.perm[0]?.write) return;
+	frm.add_custom_button(__("Secondary Qty"), () => {
+		if (frm.is_dirty()) {
+			frappe.msgprint(__("Save the Work Order before editing Secondary Qty."));
+			return;
+		}
+		frappe
+			.xcall(`${SECONDARY_QTY_METHOD}.get_secondary_quantity_rows`, { work_order: frm.doc.name })
+			.then((rows) => open_secondary_qty_dialog(frm, rows || []));
+	});
+}
+
+function secondary_qty_fields(rows) {
+	const fields = [];
+	for (const [table, label] of [
+		["deliverables", __("Deliverables")],
+		["receivables", __("Receivables")],
+	]) {
+		const tableRows = rows.filter((row) => row.table === table && row.secondary_uom);
+		if (!tableRows.length) continue;
+		fields.push({ fieldtype: "Section Break", label });
+		for (const row of tableRows) {
+			fields.push({
+				fieldname: `secondary_qty_${row.name}`,
+				fieldtype: "Float",
+				label: `${row.item_variant} · ${format_number(row.qty)} ${row.uom || ""} (${row.secondary_uom})`,
+				default: row.secondary_qty || null,
+			});
+		}
+	}
+	return fields;
+}
+
+function open_secondary_qty_dialog(frm, rows) {
+	const fields = secondary_qty_fields(rows);
+	if (!fields.length) {
+		frappe.msgprint(__("No row on this Work Order has an Item with a Secondary UOM."));
+		return;
+	}
+	const dialog = new frappe.ui.Dialog({
+		title: __("Secondary Qty"),
+		size: "large",
+		fields,
+		primary_action_label: __("Save"),
+		primary_action(values) {
+			const quantities = {};
+			for (const row of rows.filter((row) => row.secondary_uom)) {
+				quantities[row.name] = flt(values[`secondary_qty_${row.name}`]);
+			}
+			frappe
+				.xcall(`${SECONDARY_QTY_METHOD}.update_secondary_quantities`, {
+					work_order: frm.doc.name,
+					quantities,
+				})
+				.then(() => {
+					dialog.hide();
+					frappe.show_alert({ message: __("Secondary Qty saved"), indicator: "green" });
+					frm.reload_doc();
+				});
+		},
+	});
+	dialog.show();
 }
 
 function add_create_debit_button(frm) {

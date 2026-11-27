@@ -8,6 +8,8 @@ from yrp.attribute_links import value as _attribute_value
 from yrp.yrp.doctype.yrp_item.yrp_item import get_parent_item
 from yrp.yrp.doctype.yrp_process_cost.yrp_process_cost import is_flat_process_cost
 
+SECONDARY_QTY_TABLES = ("deliverables", "receivables")
+
 
 class YRPWorkOrder(Document):
 	def save(self, *args, **kwargs):
@@ -585,6 +587,41 @@ class YRPWorkOrder(Document):
 			for row in rows:
 				self.append("receivables", row)
 
+	def get_secondary_quantity_rows(self):
+		"""Deliverable and receivable rows with their Secondary Qty and Secondary UOM."""
+		return [
+			{
+				"name": row.name,
+				"table": table,
+				"item_variant": row.item_variant,
+				"qty": flt(row.qty),
+				"uom": row.uom,
+				"secondary_qty": flt(row.secondary_qty),
+				"secondary_uom": row.secondary_uom or _item_secondary_uom(row.item_variant),
+			}
+			for table in SECONDARY_QTY_TABLES
+			for row in self.get(table) or []
+		]
+
+	def set_secondary_quantities(self, quantities):
+		"""Set Secondary Qty by row name on a draft or submitted Work Order; nothing else changes."""
+		if self.docstatus == 2:
+			frappe.throw(_("Secondary Qty cannot be changed on a cancelled Work Order."))
+		rows = {row.name: row for table in SECONDARY_QTY_TABLES for row in self.get(table) or []}
+		for name, value in (quantities or {}).items():
+			row = rows.get(name)
+			if not row:
+				frappe.throw(_("Row {0} is not on Work Order {1}.").format(name, self.name))
+			row.secondary_qty = flt(value)
+			row.secondary_uom = row.secondary_uom or _item_secondary_uom(row.item_variant)
+			if row.secondary_qty and not row.secondary_uom:
+				frappe.throw(_("Item {0} has no Secondary UOM.").format(row.item_variant))
+		if self.docstatus == 0:
+			# Stale grouped editor payloads would rebuild the rows on save.
+			self.deliverable_details = ""
+			self.receivable_details = ""
+		self.save()
+
 
 def get_process_cost_rate(item_variant, quantity, process_cost):
 	attributes = get_variant_attributes(item_variant)
@@ -747,6 +784,22 @@ def get_debits(work_order):
 		],
 		order_by="creation asc",
 	)
+
+
+@frappe.whitelist()
+def get_secondary_quantity_rows(work_order):
+	doc = frappe.get_doc("YRP Work Order", work_order)
+	doc.check_permission("read")
+	return doc.get_secondary_quantity_rows()
+
+
+@frappe.whitelist(methods=["POST"])
+def update_secondary_quantities(work_order, quantities):
+	"""Save Secondary Qty by row name; allowed on draft and submitted Work Orders."""
+	doc = frappe.get_doc("YRP Work Order", work_order)
+	doc.check_permission("write")
+	doc.set_secondary_quantities(frappe.parse_json(quantities))
+	return doc.get_secondary_quantity_rows()
 
 
 def _validate_wo_close(doc):
@@ -1460,6 +1513,13 @@ def _primary_supplier_address(supplier):
 		return get_primary_address(supplier)
 	except Exception:
 		return None
+
+
+def _item_secondary_uom(item_variant):
+	parent_item = get_parent_item(item_variant) if item_variant else None
+	if not parent_item:
+		return None
+	return frappe.get_cached_value("Item", parent_item, "secondary_unit_of_measure")
 
 
 def _item_uom(item_variant):
