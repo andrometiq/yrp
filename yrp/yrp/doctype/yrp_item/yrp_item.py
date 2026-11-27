@@ -401,7 +401,7 @@ class YRPItemMixin:
 		changed = [
 			field
 			for field in restricted
-			if before.get(field) != self.get(field)
+			if (before.get(field) or None) != (self.get(field) or None)
 			and not (field == "item_hash_value" and not before.get(field) and self.get(field))
 		]
 		before_attrs = [
