@@ -73,8 +73,8 @@ class YRPStockReconciliation(Document):
 		"""Auto-fill rate from last uncancelled SLE if the user didn't enter one.
 		Scoped to (warehouse, valuation_dims) bucket (Gap #17). If no SLE
 		exists in the bucket, fall back to last SLE of the item across
-		any warehouse. If still nothing and allow_zero_valuation_rate is
-		not checked, throw."""
+		any warehouse. If still nothing, throw unless allow_zero_valuation_rate
+		is checked or the counted target is zero (zero stock needs no rate)."""
 		from yrp.stock.dimensions import get_dimension_fieldnames
 		from yrp.stock.utils import get_last_sle_rate
 
@@ -87,7 +87,7 @@ class YRPStockReconciliation(Document):
 			last_rate, _matched = get_last_sle_rate(row.item, warehouse=warehouse, **dim_filters)
 			if flt(last_rate) > 0:
 				row.rate = flt(last_rate)
-			elif not row.allow_zero_valuation_rate:
+			elif not row.allow_zero_valuation_rate and not row.make_qty_zero and flt(row.qty) > 0:
 				frappe.throw(
 					_(
 						"Row {0}: Rate is mandatory for {1}. "

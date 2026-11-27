@@ -368,3 +368,44 @@ class TestStockEntry(FrappeTestCase):
 		# Original SLEs marked cancelled
 		cancelled_sles = _get_sles(se.name, cancelled=1)
 		self.assertTrue(len(cancelled_sles) >= 1)
+
+
+class TestMaterialReceiptZeroQuantityCells(FrappeTestCase):
+	def test_zero_quantity_cells_without_rate_create_no_rows(self):
+		from types import SimpleNamespace
+
+		from yrp.stock.save_stock_items import ungroup_items_from_ui
+		from yrp.yrp_stock.doctype.yrp_stock_entry.yrp_stock_entry import YRPStockEntry
+
+		item_details = [
+			{
+				"items": [
+					{
+						"name": "SHIRT",
+						"primary_attribute": "Size",
+						"attributes": {},
+						"dimensions": {},
+						"default_uom": "Nos",
+						"values": {
+							"S": {"qty": 4, "rate": 12},
+							"M": {"qty": 0, "rate": 0},
+							"L": {"qty": None},
+						},
+					}
+				]
+			}
+		]
+		with patch(
+			"yrp.stock.save_stock_items._resolve_or_create_variant",
+			side_effect=lambda parent, attrs: f"{parent}-{attrs['Size']}",
+		):
+			rows = ungroup_items_from_ui(item_details, "YRP Stock Entry")
+		self.assertEqual([(row["item"], row["qty"], row["rate"]) for row in rows], [("SHIRT-S", 4, 12)])
+
+		doc = SimpleNamespace(
+			purpose="Material Receipt",
+			items=[frappe._dict(idx=1, allow_zero_valuation_rate=0, conversion_factor=1, **rows[0])],
+		)
+		with patch("yrp.stock.uom.apply_item_uom"):
+			YRPStockEntry.validate_items(doc)
+		self.assertEqual(doc.items[0].amount, 48)

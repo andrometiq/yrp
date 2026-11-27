@@ -525,3 +525,21 @@ class TestStockEntryRowRemarks(UnitTestCase):
 
 		self.assertEqual([row["remarks"] for row in rows], ["Handle with care"] * 2)
 		self.assertEqual(grouped[0]["items"][0]["remarks"], "Handle with care")
+
+
+class TestStockReconciliationUncountedCells(UnitTestCase):
+	def round_trip(self, rows):
+		with ExitStack() as stack:
+			for patcher in _patched_item_master():
+				stack.enter_context(patcher)
+			grouped = group_items_for_ui(rows, "YRP Stock Reconciliation")
+			return grouped, ungroup_items_from_ui(grouped, "YRP Stock Reconciliation", keep_zero=True)
+
+	def test_uncounted_size_stays_blank_and_creates_no_row(self):
+		rows = [{"item": "SHIRT-RED-S", "qty": 0, "rate": 0, "lot": "Open Lot", "row_index": 0}]
+
+		grouped, saved = self.round_trip(rows)
+
+		values = grouped[0]["items"][0]["values"]
+		self.assertEqual((values["S"]["qty"], values["M"]["qty"]), (0, None))
+		self.assertEqual([(row["item"], row["qty"]) for row in saved], [("SHIRT-RED-S", 0)])
