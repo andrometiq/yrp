@@ -75,3 +75,29 @@ class TestOpeningStockPriorMovement(TestCase):
 			"YRP Stock Ledger Entry",
 			{"item": "CLOTH-RED", "warehouse": "WH-1", "is_cancelled": 0, "lot": "LOT-1"},
 		)
+
+
+class TestReconciliationRateForZeroTarget(TestCase):
+	def set_rates(self, *rows):
+		from unittest.mock import patch
+
+		from yrp.yrp_stock.doctype.yrp_stock_reconciliation.yrp_stock_reconciliation import (
+			YRPStockReconciliation,
+		)
+
+		doc = SimpleNamespace(items=list(rows), default_warehouse="WH-1")
+		with (
+			patch("yrp.stock.dimensions.get_dimension_fieldnames", return_value=[]),
+			patch("yrp.stock.utils.get_last_sle_rate", return_value=(0, None)),
+		):
+			YRPStockReconciliation.set_rate_from_last_sle(doc)
+
+	def row(self, idx, qty, **values):
+		return frappe._dict(idx=idx, item=f"SHIRT-{idx}", warehouse="WH-1", qty=qty, rate=0, **values)
+
+	def test_zero_counted_cells_do_not_need_a_rate(self):
+		self.set_rates(self.row(1, 0), self.row(2, None), self.row(3, 7, make_qty_zero=1))
+
+	def test_counted_quantity_still_needs_a_rate(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "Row 2: Rate is mandatory for SHIRT-2"):
+			self.set_rates(self.row(1, 0), self.row(2, 5))

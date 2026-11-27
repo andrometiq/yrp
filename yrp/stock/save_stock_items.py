@@ -59,6 +59,8 @@ PARENT_CHILD_MAP = {
 		"qty_field": "qty",
 		"value_fields": ["rate", "secondary_qty", "secondary_uom"],
 		"entry_fields": ["allow_zero_valuation_rate", "make_qty_zero"],
+		# A counted zero is a real target; an uncounted size stays blank.
+		"blank_uncounted_cells": True,
 	},
 	"YRP Work Order Deliverables": {
 		"allow_secondary_qty": True,
@@ -579,8 +581,9 @@ def group_items_for_ui(child_rows, parent_doctype, *, config=None):
 				primary = attr_details["primary_attribute"]
 				# Pad missing primary values with fieldtype-correct empties. Link/Data
 				# fields such as Secondary UOM must stay blank, never the numeric 0.
+				padded_qty = None if config.get("blank_uncounted_cells") else 0
 				for pv in attr_details["primary_attribute_values"]:
-					item_entry["values"][pv] = {"qty": 0, **empty_value_fields}
+					item_entry["values"][pv] = {"qty": padded_qty, **empty_value_fields}
 				# Fill actual values from variants (multiple rows share same row_index)
 				for variant_row in variants:
 					v_attrs = _variant_attrs(variant_row[item_field], [primary])
@@ -724,7 +727,10 @@ def ungroup_items_from_ui(item_details, parent_doctype, keep_zero=False, *, conf
 			if has_primary:
 				primary = entry["primary_attribute"]
 				for pv, vals in values_dict.items():
-					qty = (vals or {}).get("qty") or 0
+					qty = (vals or {}).get("qty")
+					if qty is None and config.get("blank_uncounted_cells"):
+						continue
+					qty = qty or 0
 					if not qty and not keep_zero:
 						continue
 					attrs = dict(base_attrs)
